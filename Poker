@@ -1,0 +1,88 @@
+-- poker.lua - Texas Hold'em Single Player (vs bots)
+-- Basic CLI-based poker game for ComputerCraft
+
+local suits = {"Hearts", "Diamonds", "Clubs", "Spades"}
+local ranks = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"}
+
+-- Create and shuffle a deck
+local function createDeck()
+  local deck = {}
+  for _, suit in ipairs(suits) do
+    for _, rank in ipairs(ranks) do
+      table.insert(deck, {rank=rank, suit=suit})
+    end
+  end
+  -- Shuffle deck
+  for i = #deck, 2, -1 do
+    local j = math.random(i)
+    deck[i], deck[j] = deck[j], deck[i]
+  end
+  return deck
+end
+
+-- Print card in readable format
+local function cardToString(card)
+  return card.rank .. " of " .. card.suit
+end
+
+-- Deal hole cards to each player
+local function dealHoleCards(players, deck)
+  for _, player in ipairs(players) do
+    player.hand = {table.remove(deck), table.remove(deck)}
+  end
+end
+
+-- Deal community cards
+local function dealCommunity(deck)
+  local flop = {table.remove(deck), table.remove(deck), table.remove(deck)}
+  local turn = table.remove(deck)
+  local river = table.remove(deck)
+  return flop, turn, river
+end
+
+-- Show player's hand
+local function showHand(player)
+  print(player.name .. "'s hand:")
+  for _, card in ipairs(player.hand) do
+    print("  " .. cardToString(card))
+  end
+end
+
+-- Show community cards
+local function showCommunity(flop, turn, river)
+  print("\nCommunity Cards:")
+  for _, card in ipairs(flop) do print("  " .. cardToString(card)) end
+  print("  Turn:  " .. cardToString(turn))
+  print("  River: " .. cardToString(river))
+end
+
+-- Main game function
+local function playPoker()
+  local deck = createDeck()
+
+  -- Players (1 human, 2 bots)
+  local players = {
+    {name="You"},
+    {name="Bot1"},
+    {name="Bot2"}
+  }
+
+  dealHoleCards(players, deck)
+
+  print("\n--- Hole Cards ---")
+  for _, player in ipairs(players) do
+    if player.name == "You" then
+      showHand(player)
+    else
+      print(player.name .. " has been dealt their cards.")
+    end
+  end
+
+  -- Deal community cards
+  local flop, turn, river = dealCommunity(deck)
+  showCommunity(flop, turn, river)
+
+  print("\n(Simplified game: no betting, no winner calculation yet.)")
+end
+
+playPoker()
