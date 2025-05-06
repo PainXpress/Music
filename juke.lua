@@ -1,46 +1,70 @@
--- music_player.lua - All-in-one DFPWM Music Player for CC: Tweaked
+-- music_player.lua - Full Music Downloader & Player for CC: Tweaked
+local username = "PainXpress"
+local repo = "Music"
+local branch = "main"
+local songsTxtPath = "songs.txt"
+local baseRaw = ("https://raw.githubusercontent.com/%s/%s/%s/"):format(username, repo, branch)
 
-local speakerNames = peripheral.getNames()
+local musicDir = "/music"
+local songQueue, songs = {}, {}
+local selectedIndex, isPaused, currentSong = 1, false, nil
+
+-- Detect and wrap speakers
 local speakers = {}
-
-for _, name in ipairs(speakerNames) do
+for _, name in ipairs(peripheral.getNames()) do
     if peripheral.getType(name) == "speaker" then
         table.insert(speakers, peripheral.wrap(name))
     end
 end
+if #speakers == 0 then print("No speakers found!") return end
 
-if #speakers == 0 then
-    print("No speakers found.")
-    return
+-- Download songs.txt
+local function downloadSongList()
+    local url = baseRaw .. songsTxtPath
+    local res = http.get(url)
+    if not res then print("Failed to fetch songs.txt") return false end
+
+    local list = res.readAll()
+    res.close()
+    songs = {}
+    for song in list:gmatch("[^\r\n]+") do
+        if song:match("%.dfpwm$") then table.insert(songs, song) end
+    end
+    return true
 end
 
-local musicDir = "/music"
-local songQueue = {}
-local isPaused = false
-local currentSong = nil
+-- Download a single song
+local function downloadSong(song)
+    local songURL = baseRaw .. song
+    local savePath = fs.combine(musicDir, fs.getName(song))
+    if fs.exists(savePath) then return true end
 
--- GUI Variables
-local w, h = term.getSize()
-local selectedIndex = 1
-local songs = {}
+    local res = http.get(songURL)
+    if not res then print("Failed: " .. song) return false end
+    local data = res.readAll()
+    res.close()
 
-local function loadSongs()
-    songs = {}
-    if fs.exists(musicDir) and fs.isDir(musicDir) then
-        for _, file in ipairs(fs.list(musicDir)) do
-            if file:match("%.dfpwm$") then
-                table.insert(songs, file)
-            end
-        end
-        table.sort(songs)
+    local f = fs.open(savePath, "wb")
+    f.write(data)
+    f.close()
+    print("Downloaded: " .. song)
+    return true
+end
+
+-- Download all songs in list
+local function syncSongs()
+    if not fs.exists(musicDir) then fs.makeDir(musicDir) end
+    for _, song in ipairs(songs) do
+        downloadSong(song)
     end
 end
 
+-- GUI
 local function drawUI()
     term.clear()
     term.setCursorPos(1, 1)
     print("🎵 DFPWM Music Player")
-    print("--------------------")
+    print("---------------------")
     for i, song in ipairs(songs) do
         if i == selectedIndex then
             term.setTextColor(colors.yellow)
@@ -50,23 +74,21 @@ local function drawUI()
             print("  " .. song)
         end
     end
-
-    print("\n[Enter] Play   [Q] Queue   [Space] Pause/Resume   [Up/Down] Navigate")
-    if currentSong then
-        print("Now Playing: " .. currentSong)
-    end
+    print("\n[Enter] Play  [Q] Queue  [Space] Pause/Resume  [Up/Down] Scroll")
+    if currentSong then print("Now Playing: " .. currentSong) end
 end
 
+-- Song player
 local function playSong(filename)
     currentSong = filename
     local path = fs.combine(musicDir, filename)
     if not fs.exists(path) then return end
 
-    local file = fs.open(path, "rb")
     local decoder = require("cc.audio.dfpwm").make_decoder()
+    local file = fs.open(path, "rb")
+
     while true do
-        if isPaused then
-            os.sleep(0.1)
+        if isPaused then os.sleep(0.1)
         else
             local chunk = file.read(16 * 1024)
             if not chunk then break end
@@ -78,42 +100,46 @@ local function playSong(filename)
             end
         end
     end
+
     file.close()
     currentSong = nil
 end
 
+-- Queue manager
 local function queueManager()
     while true do
         if #songQueue > 0 then
-            local nextSong = table.remove(songQueue, 1)
-            playSong(nextSong)
+            local next = table.remove(songQueue, 1)
+            playSong(next)
         else
-            os.sleep(0.5)
+            os.sleep(0.2)
         end
     end
 end
 
-local function handleInput()
+-- Input handler
+local function inputHandler()
     while true do
-        local event, key = os.pullEvent("key")
-        if key == keys.up then
+        local e, k = os.pullEvent("key")
+        if k == keys.up then
             selectedIndex = math.max(1, selectedIndex - 1)
-        elseif key == keys.down then
+        elseif k == keys.down then
             selectedIndex = math.min(#songs, selectedIndex + 1)
-        elseif key == keys.enter then
-            table.insert(songQueue, 1, songs[selectedIndex]) -- Play immediately
-        elseif key == keys.q then
-            table.insert(songQueue, songs[selectedIndex]) -- Add to queue
-        elseif key == keys.space then
+        elseif k == keys.enter then
+            table.insert(songQueue, 1, songs[selectedIndex])
+        elseif k == keys.q then
+            table.insert(songQueue, songs[selectedIndex])
+        elseif k == keys.space then
             isPaused = not isPaused
         end
         drawUI()
     end
 end
 
--- Initial Load
-loadSongs()
+-- Main
+print("Fetching song list...")
+if not downloadSongList() then return end
+print("Syncing music files...")
+syncSongs()
 drawUI()
-
--- Run GUI and queue manager in parallel
-parallel.waitForAny(queueManager, handleInput)
+parallel.waitForAny(queueManager, inputHandler)
