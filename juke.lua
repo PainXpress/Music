@@ -16,7 +16,21 @@ for _, name in ipairs(peripheral.getNames()) do
         table.insert(speakers, peripheral.wrap(name))
     end
 end
-if #speakers == 0 then print("No speakers found!") return end
+
+-- Fallback: try a preferred side if no speakers found
+if #speakers == 0 then
+    local fallbackSide = "right" -- ← CHANGE THIS if needed
+    if peripheral.getType(fallbackSide) == "speaker" then
+        table.insert(speakers, peripheral.wrap(fallbackSide))
+        print("Fallback: speaker detected on " .. fallbackSide)
+    end
+end
+
+if #speakers == 0 then
+    print("No speakers found. Please place one adjacent or set fallbackSide.")
+    return
+end
+
 
 -- Download songs.txt
 local function downloadSongList()
