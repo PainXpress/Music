@@ -1,159 +1,234 @@
--- music_player.lua - Full Music Downloader & Player for CC: Tweaked
-local username = "PainXpress"
-local repo = "Music"
-local branch = "main"
-local songsTxtPath = "songs.txt"
-local baseRaw = ("https://raw.githubusercontent.com/%s/%s/%s/"):format(username, repo, branch)
+-- MusicPlayer.lua
+-- A ComputerCraft music player (no GUI) using DFPWM1a files, queue, playlists, and Rednet-driven multi-speaker support
 
-local musicDir = "/music"
-local songQueue, songs = {}, {}
-local selectedIndex, isPaused, currentSong = 1, false, nil
+-- CONFIGURATION --
+local config = {
+  modemSide        = "back",      -- side with modem
+  speakersChannel  = 65535,        -- Rednet channel for audio streams
+  controlChannel   = 65534,        -- channel for control messages (optional)
+  songDir          = "songs/",    -- directory with .dfpwm audio files
+  playlistDir      = "playlists/",-- directory with playlist files (serialized Lua tables)
+  chunkSize        = 8192,         -- bytes per audio chunk
+  volume           = 0.5,          -- default volume (0.0 to 1.0)
+  repeatMode       = "none",      -- none | one | all
+}
 
--- Detect and wrap speakers
-local speakers = {}
-for _, name in ipairs(peripheral.getNames()) do
-    if peripheral.getType(name) == "speaker" then
-        table.insert(speakers, peripheral.wrap(name))
+-- DEPENDENCIES --
+local fs     = fs
+local rednet = rednet
+local shell  = shell
+local dfpwm  = require("cc.audio.dfpwm")
+
+-- STATE --
+local queue = {}
+local currentIndex = 1
+local playing = false
+local paused = false
+local currentFile = nil
+
+--------------------------------------------------------------------------------
+-- Initialization --
+--------------------------------------------------------------------------------
+local function initRednet()
+  if not rednet.isOpen(config.modemSide) then rednet.open(config.modemSide) end
+end
+
+--------------------------------------------------------------------------------
+-- Audio Streaming to Speakers --
+--------------------------------------------------------------------------------
+-- Read DFPWM file in chunks and broadcast to speakers
+local function streamAudio(filename)
+  local path = config.songDir .. filename
+  if not fs.exists(path) then error("Song not found: " .. filename) end
+
+  local file = fs.open(path, "rb")
+  local decoder = dfpwm.makeDecoder()
+
+  while playing do
+    if paused then sleep(0.1) goto continue end
+
+    local chunk = file.read(config.chunkSize)
+    if not chunk or #chunk == 0 then break end
+
+    -- Broadcast raw DFPWM chunk
+    rednet.broadcast({ type = "dfpwm", data = chunk, vol = config.volume }, config.speakersChannel)
+
+    -- Decode locally and play (optional local preview)
+    local pcm    = decoder(chunk)
+    speaker.playAudio(pcm, config.volume)
+
+    ::continue::
+    -- Throttle a bit: adjust to suit chunk length/time
+    sleep(0.05)
+  end
+
+  file.close()
+end
+
+--------------------------------------------------------------------------------
+-- Playback Control --
+--------------------------------------------------------------------------------
+local function startSong(name)
+  currentFile  = name
+  playing      = true
+  paused       = false
+  print("Playing: " .. name)
+  parallel.waitForAny(
+    function() streamAudio(name) end,
+    function() -- monitor for stop/pause
+      while playing do
+        if not paused then sleep(0.1) end
+      end
     end
-end
+  )
 
--- Fallback: try a preferred side if no speakers found
-if #speakers == 0 then
-    local fallbackSide = "right" -- ← CHANGE THIS if needed
-    if peripheral.getType(fallbackSide) == "speaker" then
-        table.insert(speakers, peripheral.wrap(fallbackSide))
-        print("Fallback: speaker detected on " .. fallbackSide)
+  -- After stream ends
+  if playing then
+    if config.repeatMode == "one" then
+      startSong(name)
+    else
+      -- advance
+      currentIndex = currentIndex + 1
+      if currentIndex > #queue then
+        if config.repeatMode == "all" then currentIndex = 1
+        else playing = false; return end
+      end
+      startSong(queue[currentIndex])
     end
+  end
 end
 
-if #speakers == 0 then
-    print("No speakers found. Please place one adjacent or set fallbackSide.")
-    return
+local function pauseSong()
+  if playing then paused = true; print("Paused") end
 end
 
+local function resumeSong()
+  if playing and paused then paused = false; print("Resumed") end
+end
 
--- Download songs.txt
-local function downloadSongList()
-    local url = baseRaw .. songsTxtPath
-    local res = http.get(url)
-    if not res then print("Failed to fetch songs.txt") return false end
+local function stopSong()
+  if playing then playing = false; print("Stopped") end
+end
 
-    local list = res.readAll()
-    res.close()
-    songs = {}
-    for song in list:gmatch("[^\r\n]+") do
-        if song:match("%.dfpwm$") then table.insert(songs, song) end
+local function nextSong()
+  stopSong()
+  currentIndex = currentIndex + 1
+  if currentIndex > #queue then
+    if config.repeatMode == "all" then currentIndex = 1
+    else return end
+  end
+  startSong(queue[currentIndex])
+end
+
+local function prevSong()
+  stopSong()
+  currentIndex = math.max(1, currentIndex - 1)
+  startSong(queue[currentIndex])
+end
+
+local function addSong(name)
+  table.insert(queue, name)
+  print("Added: " .. name)
+end
+
+local function loadPlaylist(name)
+  local path = config.playlistDir .. name
+  if not fs.exists(path) then error("Playlist not found: " .. name) end
+  local content = fs.open(path, "r"):readAll()
+  local list    = textutils.unserialize(content)
+  if type(list) ~= "table" then error("Invalid playlist format") end
+  queue = list; currentIndex = 1
+  print("Playlist loaded: " .. name)
+end
+
+--------------------------------------------------------------------------------
+-- CLI Interface --
+--------------------------------------------------------------------------------
+local function showHelp()
+  print("Commands:")
+  print(" play <file|playlist>  - start file or load playlist")
+  print(" pause                 - pause current song")
+  print(" resume                - resume paused song")
+  print(" stop                  - stop playback")
+  print(" next                  - skip to next song")
+  print(" prev                  - back to previous song")
+  print(" add <file>            - add a file to queue")
+  print(" list                  - list available .dfpwm files")
+  print(" queue                 - show current queue")
+  print(" mode <none|one|all>   - set repeat mode")
+  print(" search <pattern>      - search songs by filename")
+  print(" volume <0.0-1.0>      - set volume level")
+  print(" help                  - this help")
+  print(" exit                  - quit player")
+end
+
+local function listSongs()
+  for _,f in ipairs(fs.list(config.songDir)) do
+    if f:sub(-6):lower() == ".dfpwm" then print(f) end
+  end
+end
+
+local function listQueue()
+  for i,name in ipairs(queue) do
+    print((i == currentIndex and ">") or " ", name)
+  end
+end
+
+local function handleCommand(input)
+  local args = {}
+  for w in input:gmatch("%S+") do table.insert(args, w) end
+  local cmd = table.remove(args, 1)
+  if cmd == "play" then
+    local target = args[1]
+    if target:sub(-6):lower() == ".dfpwm" then
+      queue = { target }; currentIndex = 1; startSong(target)
+    else
+      loadPlaylist(target); startSong(queue[1])
     end
-    return true
-end
-
--- Download a single song
-local function downloadSong(song)
-    local songURL = baseRaw .. song
-    local savePath = fs.combine(musicDir, fs.getName(song))
-    if fs.exists(savePath) then return true end
-
-    local res = http.get(songURL)
-    if not res then print("Failed: " .. song) return false end
-    local data = res.readAll()
-    res.close()
-
-    local f = fs.open(savePath, "wb")
-    f.write(data)
-    f.close()
-    print("Downloaded: " .. song)
-    return true
-end
-
--- Download all songs in list
-local function syncSongs()
-    if not fs.exists(musicDir) then fs.makeDir(musicDir) end
-    for _, song in ipairs(songs) do
-        downloadSong(song)
+  elseif cmd == "pause" then pauseSong()
+  elseif cmd == "resume" then resumeSong()
+  elseif cmd == "stop" then stopSong()
+  elseif cmd == "next" then nextSong()
+  elseif cmd == "prev" then prevSong()
+  elseif cmd == "add" then addSong(args[1])
+  elseif cmd == "list" then listSongs()
+  elseif cmd == "queue" then listQueue()
+  elseif cmd == "mode" then config.repeatMode = args[1]
+  elseif cmd == "volume" then
+    local v = tonumber(args[1])
+    if v and v >= 0.0 and v <= 1.0 then
+      config.volume = v
+      print("Volume set to " .. v)
+    else
+      print("Invalid volume. Use a number between 0.0 and 1.0")
     end
+  elseif cmd == "search" then
+    for _,f in ipairs(fs.list(config.songDir)) do if f:find(args[1]) then print(f) end end
+  elseif cmd == "help" then showHelp()
+  elseif cmd == "exit" then stopSong(); rednet.close(config.modemSide); return false
+  else print("Unknown command. Type 'help'.") end
+  return true
 end
 
--- GUI
-local function drawUI()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("🎵 DFPWM Music Player")
-    print("---------------------")
-    for i, song in ipairs(songs) do
-        if i == selectedIndex then
-            term.setTextColor(colors.yellow)
-            print("> " .. song)
-            term.setTextColor(colors.white)
-        else
-            print("  " .. song)
-        end
-    end
-    print("\n[Enter] Play  [Q] Queue  [Space] Pause/Resume  [Up/Down] Scroll")
-    if currentSong then print("Now Playing: " .. currentSong) end
+--------------------------------------------------------------------------------
+-- Main --
+--------------------------------------------------------------------------------
+initRednet()
+print("DFPWM Music Player Ready. Type 'help'.")
+while true do
+  write("> ")
+  local input = read()
+  if not handleCommand(input) then break end
 end
 
--- Song player
-local function playSong(filename)
-    currentSong = filename
-    local path = fs.combine(musicDir, filename)
-    if not fs.exists(path) then return end
-
-    local decoder = require("cc.audio.dfpwm").make_decoder()
-    local file = fs.open(path, "rb")
-
-    while true do
-        if isPaused then os.sleep(0.1)
-        else
-            local chunk = file.read(16 * 1024)
-            if not chunk then break end
-            local audio = decoder(chunk)
-            for _, sp in ipairs(speakers) do
-                while not sp.playAudio(audio) do
-                    os.pullEvent("speaker_audio_empty")
-                end
-            end
-        end
-    end
-
-    file.close()
-    currentSong = nil
-end
-
--- Queue manager
-local function queueManager()
-    while true do
-        if #songQueue > 0 then
-            local next = table.remove(songQueue, 1)
-            playSong(next)
-        else
-            os.sleep(0.2)
-        end
-    end
-end
-
--- Input handler
-local function inputHandler()
-    while true do
-        local e, k = os.pullEvent("key")
-        if k == keys.up then
-            selectedIndex = math.max(1, selectedIndex - 1)
-        elseif k == keys.down then
-            selectedIndex = math.min(#songs, selectedIndex + 1)
-        elseif k == keys.enter then
-            table.insert(songQueue, 1, songs[selectedIndex])
-        elseif k == keys.q then
-            table.insert(songQueue, songs[selectedIndex])
-        elseif k == keys.space then
-            isPaused = not isPaused
-        end
-        drawUI()
-    end
-end
-
--- Main
-print("Fetching song list...")
-if not downloadSongList() then return end
-print("Syncing music files...")
-syncSongs()
-drawUI()
-parallel.waitForAny(queueManager, inputHandler)
+-- NOTE: On each speaker computer, run a receiver script:
+-- 
+-- local rednet = rednet; local modemSide = "back"; rednet.open(modemSide)
+-- local dfpwm = require("cc.audio.dfpwm"); local decoder = dfpwm.makeDecoder()
+-- while true do
+--   local id, msg = rednet.receive(config.speakersChannel)
+--   if msg.type == "dfpwm" then
+--     local pcm = decoder(msg.data)
+--     speaker.playAudio(pcm, msg.vol)
+--   end
+-- end
