@@ -5,7 +5,6 @@
 local config = {
   modemSide        = "back",      -- side with modem
   speakersChannel  = 65535,        -- Rednet channel for audio streams
-  controlChannel   = 65534,        -- channel for control messages (optional)
   songDir          = "songs/",    -- directory with .dfpwm audio files
   playlistDir      = "playlists/",-- directory with playlist files (serialized Lua tables)
   chunkSize        = 8192,         -- bytes per audio chunk
@@ -16,7 +15,6 @@ local config = {
 -- DEPENDENCIES --
 local fs     = fs
 local rednet = rednet
-local shell  = shell
 local dfpwm  = require("cc.audio.dfpwm")
 
 -- STATE --
@@ -24,7 +22,6 @@ local queue = {}
 local currentIndex = 1
 local playing = false
 local paused = false
-local currentFile = nil
 
 --------------------------------------------------------------------------------
 -- Initialization --
@@ -36,7 +33,6 @@ end
 --------------------------------------------------------------------------------
 -- Audio Streaming to Speakers --
 --------------------------------------------------------------------------------
--- Read DFPWM file in chunks and broadcast to speakers
 local function streamAudio(filename)
   local path = config.songDir .. filename
   if not fs.exists(path) then error("Song not found: " .. filename) end
@@ -45,20 +41,17 @@ local function streamAudio(filename)
   local decoder = dfpwm.makeDecoder()
 
   while playing do
-    if paused then sleep(0.1) goto continue end
+    if not paused then
+      local chunk = file.read(config.chunkSize)
+      if not chunk or #chunk == 0 then break end
 
-    local chunk = file.read(config.chunkSize)
-    if not chunk or #chunk == 0 then break end
+      -- Broadcast raw DFPWM chunk
+      rednet.broadcast({ type = "dfpwm", data = chunk, vol = config.volume }, config.speakersChannel)
 
-    -- Broadcast raw DFPWM chunk
-    rednet.broadcast({ type = "dfpwm", data = chunk, vol = config.volume }, config.speakersChannel)
-
-    -- Decode locally and play (optional local preview)
-    local pcm    = decoder(chunk)
-    speaker.playAudio(pcm, config.volume)
-
-    ::continue::
-    -- Throttle a bit: adjust to suit chunk length/time
+      -- Optional local preview
+      local pcm = decoder(chunk)
+      speaker.playAudio(pcm, config.volume)
+    end
     sleep(0.05)
   end
 
@@ -69,29 +62,24 @@ end
 -- Playback Control --
 --------------------------------------------------------------------------------
 local function startSong(name)
-  currentFile  = name
-  playing      = true
-  paused       = false
+  playing = true
+  paused = false
   print("Playing: " .. name)
-  parallel.waitForAny(
-    function() streamAudio(name) end,
-    function() -- monitor for stop/pause
-      while playing do
-        if not paused then sleep(0.1) end
-      end
-    end
-  )
+  streamAudio(name)
 
   -- After stream ends
   if playing then
     if config.repeatMode == "one" then
       startSong(name)
     else
-      -- advance
       currentIndex = currentIndex + 1
       if currentIndex > #queue then
-        if config.repeatMode == "all" then currentIndex = 1
-        else playing = false; return end
+        if config.repeatMode == "all" then
+          currentIndex = 1
+        else
+          playing = false
+          return
+        end
       end
       startSong(queue[currentIndex])
     end
@@ -107,15 +95,17 @@ local function resumeSong()
 end
 
 local function stopSong()
-  if playing then playing = false; print("Stopped") end
+  if playing then
+    playing = false
+    print("Stopped")
+  end
 end
 
 local function nextSong()
   stopSong()
   currentIndex = currentIndex + 1
   if currentIndex > #queue then
-    if config.repeatMode == "all" then currentIndex = 1
-    else return end
+    if config.repeatMode == "all" then currentIndex = 1 else return end
   end
   startSong(queue[currentIndex])
 end
@@ -137,7 +127,8 @@ local function loadPlaylist(name)
   local content = fs.open(path, "r"):readAll()
   local list    = textutils.unserialize(content)
   if type(list) ~= "table" then error("Invalid playlist format") end
-  queue = list; currentIndex = 1
+  queue = list
+  currentIndex = 1
   print("Playlist loaded: " .. name)
 end
 
@@ -158,6 +149,7 @@ local function showHelp()
   print(" mode <none|one|all>   - set repeat mode")
   print(" search <pattern>      - search songs by filename")
   print(" volume <0.0-1.0>      - set volume level")
+  print(" save <name>           - save current queue as playlist")
   print(" help                  - this help")
   print(" exit                  - quit player")
 end
@@ -174,39 +166,69 @@ local function listQueue()
   end
 end
 
+local function savePlaylist(name)
+  local path = config.playlistDir .. name
+  local f = fs.open(path, "w")
+  f.write(textutils.serialize(queue))
+  f.close()
+  print("Playlist saved: " .. name)
+end
+
 local function handleCommand(input)
   local args = {}
   for w in input:gmatch("%S+") do table.insert(args, w) end
   local cmd = table.remove(args, 1)
   if cmd == "play" then
-    local target = args[1]
-    if target:sub(-6):lower() == ".dfpwm" then
-      queue = { target }; currentIndex = 1; startSong(target)
+    local t = args[1]
+    if t and t:sub(-6):lower() == ".dfpwm" then
+      queue = { t }
+      currentIndex = 1
+      startSong(t)
     else
-      loadPlaylist(target); startSong(queue[1])
+      loadPlaylist(t)
+      startSong(queue[1])
     end
-  elseif cmd == "pause" then pauseSong()
-  elseif cmd == "resume" then resumeSong()
-  elseif cmd == "stop" then stopSong()
-  elseif cmd == "next" then nextSong()
-  elseif cmd == "prev" then prevSong()
-  elseif cmd == "add" then addSong(args[1])
-  elseif cmd == "list" then listSongs()
-  elseif cmd == "queue" then listQueue()
-  elseif cmd == "mode" then config.repeatMode = args[1]
+  elseif cmd == "pause" then
+    pauseSong()
+  elseif cmd == "resume" then
+    resumeSong()
+  elseif cmd == "stop" then
+    stopSong()
+  elseif cmd == "next" then
+    nextSong()
+  elseif cmd == "prev" then
+    prevSong()
+  elseif cmd == "add" then
+    addSong(args[1])
+  elseif cmd == "list" then
+    listSongs()
+  elseif cmd == "queue" then
+    listQueue()
+  elseif cmd == "mode" then
+    config.repeatMode = args[1]
   elseif cmd == "volume" then
     local v = tonumber(args[1])
-    if v and v >= 0.0 and v <= 1.0 then
+    if v and v >= 0 and v <= 1 then
       config.volume = v
       print("Volume set to " .. v)
     else
-      print("Invalid volume. Use a number between 0.0 and 1.0")
+      print("Invalid volume. Use 0.0 to 1.0")
     end
   elseif cmd == "search" then
-    for _,f in ipairs(fs.list(config.songDir)) do if f:find(args[1]) then print(f) end end
-  elseif cmd == "help" then showHelp()
-  elseif cmd == "exit" then stopSong(); rednet.close(config.modemSide); return false
-  else print("Unknown command. Type 'help'.") end
+    for _,f in ipairs(fs.list(config.songDir)) do
+      if f:lower():find(args[1]:lower()) then print(f) end
+    end
+  elseif cmd == "save" then
+    savePlaylist(args[1])
+  elseif cmd == "help" then
+    showHelp()
+  elseif cmd == "exit" then
+    stopSong()
+    rednet.close(config.modemSide)
+    return false
+  else
+    print("Unknown command. Type 'help'.")
+  end
   return true
 end
 
@@ -217,17 +239,17 @@ initRednet()
 print("DFPWM Music Player Ready. Type 'help'.")
 while true do
   write("> ")
-  local input = read()
-  if not handleCommand(input) then break end
+  local line = read()
+  if not handleCommand(line) then break end
 end
 
--- NOTE: On each speaker computer, run a receiver script:
--- 
--- local rednet = rednet; local modemSide = "back"; rednet.open(modemSide)
--- local dfpwm = require("cc.audio.dfpwm"); local decoder = dfpwm.makeDecoder()
+-- Speaker-side listener (run on each speaker machine):
+--
+-- rednet.open(config.modemSide)
+-- local decoder = dfpwm.makeDecoder()
 -- while true do
---   local id, msg = rednet.receive(config.speakersChannel)
---   if msg.type == "dfpwm" then
+--   local id,msg = rednet.receive(config.speakersChannel)
+--   if msg.type=="dfpwm" then
 --     local pcm = decoder(msg.data)
 --     speaker.playAudio(pcm, msg.vol)
 --   end
