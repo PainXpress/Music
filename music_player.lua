@@ -1,4 +1,4 @@
--- Music Player for CC:Tweaked (Fixed)
+-- Music Player for ComputerCraft 1.80
 -- Supports DFPWM playback, downloading from catbox.moe, playlists, and more
 
 local function initDirectories()
@@ -9,37 +9,46 @@ end
 local function findSpeakers()
     local speakers = {}
     local modems = {}
-    -- First, find all modems to ensure they're enabled
+    print("Scanning for modems...")
     for _, side in ipairs(peripheral.getNames()) do
         if peripheral.getType(side) == "modem" then
             local modem = peripheral.wrap(side)
             if not modem.isOpen(0) then
-                modem.open(0) -- Open a channel to ensure network communication
+                modem.open(0)
                 print("Opened modem on: " .. side)
+            else
+                print("Modem already open on: " .. side)
             end
             table.insert(modems, modem)
         end
     end
-    -- Now look for speakers
+    print("Scanning for speakers...")
     for _, side in ipairs(peripheral.getNames()) do
         if peripheral.getType(side) == "speaker" then
             local speaker = peripheral.wrap(side)
+            print("Found speaker on: " .. side)
+            print("Speaker methods:")
+            for k, v in pairs(speaker) do
+                print("  " .. k .. ": " .. type(v))
+            end
             if speaker.playAudio then
-                print("Found speaker on: " .. side)
+                print("Speaker supports playback")
                 table.insert(speakers, speaker)
             else
-                print("Speaker on " .. side .. " does not support playback (missing playAudio)")
+                print("Speaker does NOT support playback (missing playAudio)")
+                print("This may indicate an incompatible speaker or version mismatch.")
+                print("Expected: ComputerCraft 1.80+ speaker (crafted with 4 iron ingots and 1 note block).")
             end
         end
     end
     if #speakers == 0 then
-        error("No compatible speakers found. Ensure speakers are connected via wired modems and support playback.")
+        print("WARNING: No compatible speakers found. Playback will not work.")
+        print("You can still use download, playlist, and other features.")
     end
     return speakers
 end
 
 local function sanitizeName(name)
-    -- Remove invalid filesystem characters
     return name:gsub("[^%w%-_]", ""):gsub("^%s*(.-)%s*$", "%1")
 end
 
@@ -74,6 +83,10 @@ local function downloadSong(url, name)
 end
 
 local function playSong(speakers, songPath, playbackState)
+    if #speakers == 0 then
+        print("Cannot play: No compatible speakers available.")
+        return false
+    end
     if not fs.exists(songPath) then
         print("Song not found: " .. songPath)
         return false
@@ -102,7 +115,7 @@ local function playSong(speakers, songPath, playbackState)
                     if speaker.playAudio then
                         speaker.playAudio(chunk)
                     else
-                        print("Speaker does not support playback")
+                        print("Playback failed: Speaker lacks playAudio method.")
                         playbackState.playing = false
                         break
                     end
@@ -171,6 +184,10 @@ local function shuffle(t)
 end
 
 local function playPlaylist(speakers, playlist, doShuffle, playbackState)
+    if #speakers == 0 then
+        print("Cannot play: No compatible speakers available.")
+        return
+    end
     local songs = getPlaylistSongs(playlist)
     if #songs == 0 then
         print("Playlist is empty: " .. playlist)
@@ -191,14 +208,14 @@ end
 local function listSongs()
     local songs = fs.list("/music/songs")
     for _, song in ipairs(songs) do
-        print(song:sub(1, -7)) -- Remove .dfpwm extension
+        print(song:sub(1, -7))
     end
 end
 
 local function listPlaylists()
     local playlists = fs.list("/music/playlists")
     for _, playlist in ipairs(playlists) do
-        print(playlist:sub(1, -5)) -- Remove .txt extension
+        print(playlist:sub(1, -5))
     end
 end
 
@@ -238,7 +255,7 @@ local function main()
         coroutine.resume(playbackThread)
     end
 
-    print("CC:Tweaked Music Player")
+    print("ComputerCraft Music Player")
     print("Commands: download <url> <name>, play <song>, playlist create <name>, playlist add <playlist> <song>, play playlist <name> [shuffle], pause, skip, stop, search <query>, list songs, list playlists, space, exit")
 
     while true do
@@ -285,7 +302,9 @@ local function main()
                 playbackState.paused = false
                 playbackState.skip = false
                 for _, speaker in ipairs(speakers) do
-                    speaker.stop()
+                    if speaker.stop then
+                        speaker.stop()
+                    end
                 end
                 print("Stopped")
             else
@@ -303,7 +322,9 @@ local function main()
             if playbackState.playing then
                 playbackState.playing = false
                 for _, speaker in ipairs(speakers) do
-                    speaker.stop()
+                    if speaker.stop then
+                        speaker.stop()
+                    end
                 end
             end
             break
