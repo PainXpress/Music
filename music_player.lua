@@ -6,7 +6,24 @@ if not speaker then
     error("Speaker peripheral required")
 end
 
--- DFPWM decoder (adapted from ComputerCraft community)
+-- Custom bitwise functions for Lua 5.1 compatibility
+local function rshift(x, n)
+    return math.floor(x / 2^n)
+end
+
+local function band(x, y)
+    local p = 1
+    local z = 0
+    while p <= x and p <= y do
+        if math.floor(x / p) % 2 == 1 and math.floor(y / p) % 2 == 1 then
+            z = z + p
+        end
+        p = p * 2
+    end
+    return z
+end
+
+-- DFPWM decoder (adapted for Lua 5.1)
 local function dfpwm_decoder()
     local filter = 0
     local level = 0
@@ -26,7 +43,7 @@ local function dfpwm_decoder()
         for i = 1, #data do
             local byte = data:byte(i)
             for j = 0, 7 do
-                local bit = (byte >> (7 - j)) & 1
+                local bit = band(rshift(byte, 7 - j), 1) -- Replaced (byte >> (7 - j)) & 1
                 output[#output + 1] = decoder(bit)
             end
         end
@@ -57,11 +74,21 @@ end
 local decode = dfpwm_decoder()
 local decoded = decode(dfpwm_data)
 
--- Play audio
-local buffer = {}
-for i = 1, #decoded, 8192 do
-    local chunk = table.concat(decoded, "", i, math.min(i + 8191, #decoded))
-    speaker.playAudio(chunk)
+-- Play audio (also fixing the table.concat issue from earlier)
+local buffer = ""
+for i = 1, #decoded do
+    buffer = buffer .. decoded[i]
+    if #buffer >= 8192 then
+        speaker.playAudio(buffer)
+        while not speaker.playAudio("") do
+            os.pullEvent("speaker_audio_empty")
+        end
+        buffer = ""
+    end
+end
+-- Play any remaining data
+if #buffer > 0 then
+    speaker.playAudio(buffer)
     while not speaker.playAudio("") do
         os.pullEvent("speaker_audio_empty")
     end
