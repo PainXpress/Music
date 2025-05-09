@@ -1,4 +1,4 @@
--- Music Player for CC:Tweaked
+-- Music Player for CC:Tweaked (Fixed)
 -- Supports DFPWM playback, downloading from catbox.moe, playlists, and more
 
 local function initDirectories()
@@ -8,92 +8,150 @@ end
 
 local function findSpeakers()
     local speakers = {}
+    local modems = {}
+    -- First, find all modems to ensure they're enabled
+    for _, side in ipairs(peripheral.getNames()) do
+        if peripheral.getType(side) == "modem" then
+            local modem = peripheral.wrap(side)
+            if not modem.isOpen(0) then
+                modem.open(0) -- Open a channel to ensure network communication
+                print("Opened modem on: " .. side)
+            end
+            table.insert(modems, modem)
+        end
+    end
+    -- Now look for speakers
     for _, side in ipairs(peripheral.getNames()) do
         if peripheral.getType(side) == "speaker" then
-            table.insert(speakers, peripheral.wrap(side))
+            local speaker = peripheral.wrap(side)
+            if speaker.playAudio then
+                print("Found speaker on: " .. side)
+                table.insert(speakers, speaker)
+            else
+                print("Speaker on " .. side .. " does not support playback (missing playAudio)")
+            end
         end
     end
     if #speakers == 0 then
-        error("No speakers found. Please connect speakers via wired modems.")
+        error("No compatible speakers found. Ensure speakers are connected via wired modems and support playback.")
     end
     return speakers
 end
 
+local function sanitizeName(name)
+    -- Remove invalid filesystem characters
+    return name:gsub("[^%w%-_]", ""):gsub("^%s*(.-)%s*$", "%1")
+end
+
 local function downloadSong(url, name)
     if not http.checkURL(url) then
-        print("Invalid URL: " .. url)
+        print("Invalid URL format: " .. url)
         return false
     end
-    local response = http.get(url)
+    local response, err = http.get(url)
     if not response then
-        print("Failed to download from " .. url)
+        print("Download failed: " .. (err or "Unknown error"))
         return false
     end
-    local file = fs.open("/music/songs/" .. name .. ".dfpwm", "wb")
+    local sanitizedName = sanitizeName(name)
+    if sanitizedName == "" then
+        print("Invalid song name")
+        response.close()
+        return false
+    end
+    local filePath = "/music/songs/" .. sanitizedName .. ".dfpwm"
+    if fs.exists(filePath) then
+        print("Song already exists: " .. sanitizedName)
+        response.close()
+        return false
+    end
+    local file = fs.open(filePath, "wb")
     file.write(response.readAll())
     file.close()
     response.close()
-    print("Downloaded: " .. name)
+    print("Downloaded: " .. sanitizedName)
     return true
 end
 
-local function decodeDFPWM(file)
-    -- Simple DFPWM decoder (based on CC:Tweaked's internal logic)
-    local data = {}
-    local handle = fs.open(file, "rb")
-    while true do
-        local byte = handle.read()
-        if not byte then break end
-        table.insert(data, byte)
-    end
-    handle.close()
-    return data
-end
-
-local function playSong(speakers, songPath)
+local function playSong(speakers, songPath, playbackState)
     if not fs.exists(songPath) then
         print("Song not found: " .. songPath)
         return false
     end
-    local data = decodeDFPWM(songPath)
-    local bufferSize = 8192
-    for i = 1, #data, bufferSize do
-        local chunk = {table.unpack(data, i, math.min(i + bufferSize - 1, #data))}
-        for _, speaker in ipairs(speakers) do
-            speaker.playAudio(chunk)
-        end
-        os.sleep(0.1) -- Prevent buffer overflow
+    local file = fs.open(songPath, "rb")
+    if not file then
+        print("Failed to open song: " .. songPath)
+        return false
     end
+    playbackState.playing = true
+    playbackState.paused = false
+    local bufferSize = 8192
+    while playbackState.playing do
+        if not playbackState.paused then
+            local chunk = {}
+            for i = 1, bufferSize do
+                local byte = file.read()
+                if not byte then
+                    playbackState.playing = false
+                    break
+                end
+                chunk[i] = byte
+            end
+            if #chunk > 0 then
+                for _, speaker in ipairs(speakers) do
+                    if speaker.playAudio then
+                        speaker.playAudio(chunk)
+                    else
+                        print("Speaker does not support playback")
+                        playbackState.playing = false
+                        break
+                    end
+                end
+            end
+        end
+        coroutine.yield()
+    end
+    file.close()
+    playbackState.playing = false
+    playbackState.paused = false
     return true
 end
 
 local function createPlaylist(name)
-    local file = fs.open("/music/playlists/" .. name .. ".txt", "w")
+    local sanitizedName = sanitizeName(name)
+    if sanitizedName == "" then
+        print("Invalid playlist name")
+        return
+    end
+    local file = fs.open("/music/playlists/" .. sanitizedName .. ".txt", "w")
     file.close()
-    print("Created playlist: " .. name)
+    print("Created playlist: " .. sanitizedName)
 end
 
 local function addToPlaylist(playlist, song)
-    if not fs.exists("/music/playlists/" .. playlist .. ".txt") then
+    local playlistPath = "/music/playlists/" .. sanitizeName(playlist) .. ".txt"
+    local songPath = "/music/songs/" .. sanitizeName(song) .. ".dfpwm"
+    if not fs.exists(playlistPath) then
         print("Playlist not found: " .. playlist)
         return
     end
-    if not fs.exists("/music/songs/" .. song .. ".dfpwm") then
+    if not fs.exists(songPath) then
         print("Song not found: " .. song)
         return
     end
-    local file = fs.open("/music/playlists/" .. playlist .. ".txt", "a")
-    file.writeLine(song)
+    local file = fs.open(playlistPath, "a")
+    file.writeLine(sanitizeName(song))
     file.close()
     print("Added " .. song .. " to " .. playlist)
 end
 
 local function getPlaylistSongs(playlist)
     local songs = {}
-    if not fs.exists("/music/playlists/" .. playlist .. ".txt") then
+    local playlistPath = "/music/playlists/" .. sanitizeName(playlist) .. ".txt"
+    if not fs.exists(playlistPath) then
         return songs
     end
-    local file = fs.open("/music/playlists/" .. playlist .. ".txt", "r")
+    local file = fs.open(playlistPath, "r")
     while true do
         local line = file.readLine()
         if not line then break end
@@ -112,7 +170,7 @@ local function shuffle(t)
     return t
 end
 
-local function playPlaylist(speakers, playlist, doShuffle)
+local function playPlaylist(speakers, playlist, doShuffle, playbackState)
     local songs = getPlaylistSongs(playlist)
     if #songs == 0 then
         print("Playlist is empty: " .. playlist)
@@ -123,7 +181,10 @@ local function playPlaylist(speakers, playlist, doShuffle)
     end
     for i, song in ipairs(songs) do
         print("Playing: " .. song)
-        playSong(speakers, "/music/songs/" .. song .. ".dfpwm")
+        playSong(speakers, "/music/songs/" .. song .. ".dfpwm", playbackState)
+        if playbackState.skip then
+            playbackState.skip = false
+        end
     end
 end
 
@@ -151,7 +212,6 @@ local function searchSongs(query)
 end
 
 local function checkSpace()
-    -- CC:Tweaked doesn't expose disk space directly, but we can estimate
     local songs = fs.list("/music/songs")
     local totalSize = 0
     for _, song in ipairs(songs) do
@@ -164,9 +224,22 @@ local function main()
     initDirectories()
     local speakers = findSpeakers()
     math.randomseed(os.time())
+    local playbackState = { playing = false, paused = false, skip = false }
+    local playbackThread = nil
+
+    local function startPlayback(fn)
+        if playbackState.playing then
+            print("Stopping current playback")
+            playbackState.playing = false
+            playbackState.skip = false
+            playbackState.paused = false
+        end
+        playbackThread = coroutine.create(fn)
+        coroutine.resume(playbackThread)
+    end
 
     print("CC:Tweaked Music Player")
-    print("Commands: download <url> <name>, play <song>, playlist create <name>, playlist add <playlist> <song>, play playlist <name> [shuffle], skip, stop, search <query>, list songs, list playlists, space, exit")
+    print("Commands: download <url> <name>, play <song>, playlist create <name>, playlist add <playlist> <song>, play playlist <name> [shuffle], pause, skip, stop, search <query>, list songs, list playlists, space, exit")
 
     while true do
         write("> ")
@@ -179,19 +252,44 @@ local function main()
         if args[1] == "download" and args[2] and args[3] then
             downloadSong(args[2], args[3])
         elseif args[1] == "play" and args[2] then
-            playSong(speakers, "/music/songs/" .. args[2] .. ".dfpwm")
+            startPlayback(function()
+                playSong(speakers, "/music/songs/" .. sanitizeName(args[2]) .. ".dfpwm", playbackState)
+            end)
         elseif args[1] == "playlist" and args[2] == "create" and args[3] then
             createPlaylist(args[3])
         elseif args[1] == "playlist" and args[2] == "add" and args[3] and args[4] then
             addToPlaylist(args[3], args[4])
         elseif args[1] == "play" and args[2] == "playlist" and args[3] then
             local doShuffle = args[4] == "shuffle"
-            playPlaylist(speakers, args[3], doShuffle)
+            startPlayback(function()
+                playPlaylist(speakers, args[3], doShuffle, playbackState)
+            end)
+        elseif args[1] == "pause" then
+            if playbackState.playing then
+                playbackState.paused = not playbackState.paused
+                print(playbackState.paused and "Paused" or "Resumed")
+            else
+                print("No song is playing")
+            end
         elseif args[1] == "skip" then
-            print("Skip not implemented in single song mode") -- Requires threading
+            if playbackState.playing then
+                playbackState.skip = true
+                playbackState.paused = false
+                print("Skipping")
+            else
+                print("No song is playing")
+            end
         elseif args[1] == "stop" then
-            for _, speaker in ipairs(speakers) do
-                speaker.stop()
+            if playbackState.playing then
+                playbackState.playing = false
+                playbackState.paused = false
+                playbackState.skip = false
+                for _, speaker in ipairs(speakers) do
+                    speaker.stop()
+                end
+                print("Stopped")
+            else
+                print("No song is playing")
             end
         elseif args[1] == "search" and args[2] then
             searchSongs(args[2])
@@ -202,9 +300,19 @@ local function main()
         elseif args[1] == "space" then
             checkSpace()
         elseif args[1] == "exit" then
+            if playbackState.playing then
+                playbackState.playing = false
+                for _, speaker in ipairs(speakers) do
+                    speaker.stop()
+                end
+            end
             break
         else
             print("Unknown command or missing arguments")
+        end
+
+        if playbackThread and coroutine.status(playbackThread) == "suspended" then
+            coroutine.resume(playbackThread)
         end
     end
 end
