@@ -1,9 +1,25 @@
--- Music Player for CC:Tweaked
--- Supports direct DFPWM playback through speakers, downloading from catbox.moe, playlists, and more
+-- Music Player for CC:Tweaked 1.89.2
+-- Uses external /dfpwm program for DFPWM decoding
 
-local dfpwm = require("cc.audio.dfpwm")
+local function loadExternalDfpwm()
+    if not fs.exists("/dfpwm") then
+        error("External DFPWM program not found at /dfpwm. Please ensure the file exists.")
+    end
+    local dfpwmFunc, err = loadfile("/dfpwm")
+    if not dfpwmFunc then
+        error("Failed to load /dfpwm: " .. (err or "Unknown error"))
+    end
+    local dfpwm = dfpwmFunc()
+    if not dfpwm or not dfpwm.make_decoder then
+        error("Loaded /dfpwm, but it does not provide a make_decoder function. Ensure it's compatible.")
+    end
+    return dfpwm
+end
 
 local function initDirectories()
+    if not fs.exists("/music") then
+        fs.makeDir("/music")
+    end
     fs.makeDir("/music/songs")
     fs.makeDir("/music/playlists")
 end
@@ -28,7 +44,7 @@ local function findSpeakers()
         end
     end
     if #speakers == 0 then
-        error("No compatible speakers found. Playback requires a speaker with playAudio support.")
+        error("No compatible speakers found. Ensure a speaker is attached and supports playAudio.")
     end
     return speakers
 end
@@ -42,7 +58,7 @@ local function downloadSong(url, name)
         print("Invalid URL format: " .. url)
         return false
     end
-    local response, err = http.get(url)
+    local response, err = http.get(url, nil, true)
     if not response then
         print("Download failed: " .. (err or "Unknown error"))
         return false
@@ -67,7 +83,7 @@ local function downloadSong(url, name)
     return true
 end
 
-local function playSong(speakers, songPath, playbackState)
+local function playSong(speakers, songPath, playbackState, dfpwm)
     if not fs.exists(songPath) then
         print("Song not found: " .. songPath)
         return false
@@ -80,7 +96,7 @@ local function playSong(speakers, songPath, playbackState)
     local decoder = dfpwm.make_decoder()
     playbackState.playing = true
     playbackState.paused = false
-    local bufferSize = 8192
+    local bufferSize = 16384
     while playbackState.playing do
         if not playbackState.paused then
             local chunk = file.read(bufferSize)
@@ -88,7 +104,12 @@ local function playSong(speakers, songPath, playbackState)
                 playbackState.playing = false
                 break
             end
-            local decoded = decoder(chunk)
+            local decoded, err = decoder(chunk)
+            if not decoded then
+                print("Decoding failed: " .. (err or "Unknown error"))
+                playbackState.playing = false
+                break
+            end
             if #decoded > 0 then
                 for _, speaker in ipairs(speakers) do
                     speaker.playAudio(decoded)
@@ -109,9 +130,14 @@ local function createPlaylist(name)
         print("Invalid playlist name")
         return
     end
-    local file = fs.open("/music/playlists/" .. sanitizedName .. ".txt", "w")
-    file.close()
-    print("Created playlist: " .. sanitizedName)
+    local filePath = "/music/playlists/" .. sanitizedName .. ".txt"
+    if not fs.exists(filePath) then
+        local file = fs.open(filePath, "w")
+        file.close()
+        print("Created playlist: " .. sanitizedName)
+    else
+        print("Playlist already exists: " .. sanitizedName)
+    end
 end
 
 local function addToPlaylist(playlist, song)
@@ -156,7 +182,7 @@ local function shuffle(t)
     return t
 end
 
-local function playPlaylist(speakers, playlist, doShuffle, playbackState)
+local function playPlaylist(speakers, playlist, doShuffle, playbackState, dfpwm)
     local songs = getPlaylistSongs(playlist)
     if #songs == 0 then
         print("Playlist is empty: " .. playlist)
@@ -167,7 +193,7 @@ local function playPlaylist(speakers, playlist, doShuffle, playbackState)
     end
     for i, song in ipairs(songs) do
         print("Playing: " .. song)
-        playSong(speakers, "/music/songs/" .. song .. ".dfpwm", playbackState)
+        playSong(speakers, "/music/songs/" .. song .. ".dfpwm", playbackState, dfpwm)
         if playbackState.skip then
             playbackState.skip = false
         end
@@ -208,6 +234,7 @@ end
 
 local function main()
     initDirectories()
+    local dfpwm = loadExternalDfpwm()
     local speakers = findSpeakers()
     math.randomseed(os.time())
     local playbackState = { playing = false, paused = false, skip = false }
@@ -219,12 +246,15 @@ local function main()
             playbackState.playing = false
             playbackState.skip = false
             playbackState.paused = false
+            for _, speaker in ipairs(speakers) do
+                speaker.stop()
+            end
         end
         playbackThread = coroutine.create(fn)
         coroutine.resume(playbackThread)
     end
 
-    print("CC:Tweaked Music Player (Direct Playback)")
+    print("CC:Tweaked 1.89.2 Music Player (Using External DFPWM)")
     print("Commands: download <url> <name>, play <song>, playlist create <name>, playlist add <playlist> <song>, play playlist <name> [shuffle], pause, skip, stop, search <query>, list songs, list playlists, space, exit")
 
     while true do
@@ -239,7 +269,7 @@ local function main()
             downloadSong(args[2], args[3])
         elseif args[1] == "play" and args[2] then
             startPlayback(function()
-                playSong(speakers, "/music/songs/" .. sanitizeName(args[2]) .. ".dfpwm", playbackState)
+                playSong(speakers, "/music/songs/" .. sanitizeName(args[2]) .. ".dfpwm", playbackState, dfpwm)
             end)
         elseif args[1] == "playlist" and args[2] == "create" and args[3] then
             createPlaylist(args[3])
@@ -248,7 +278,7 @@ local function main()
         elseif args[1] == "play" and args[2] == "playlist" and args[3] then
             local doShuffle = args[4] == "shuffle"
             startPlayback(function()
-                playPlaylist(speakers, args[3], doShuffle, playbackState)
+                playPlaylist(speakers, args[3], doShuffle, playbackState, dfpwm)
             end)
         elseif args[1] == "pause" then
             if playbackState.playing then
