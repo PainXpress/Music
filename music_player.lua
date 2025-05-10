@@ -56,7 +56,7 @@ print("Enter YouTube link:")
 local youtube_url = read()
 
 -- Replace with your server's IP and port
-local server_url = "https://93c6-2600-6c56-9940-21-144d-f92f-bf0f-e517.ngrok-free.app"
+local server_url = "https://973d-2600-6c56-9940-21-ed65-22f1-aad0-ccaa.ngrok-free.app"
 local response, err = http.post(server_url, textutils.serializeJSON({url = youtube_url}))
 
 if not response then
