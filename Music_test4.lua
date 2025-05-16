@@ -1,5 +1,5 @@
 -- Configuration
-local filename = "your_song.dfpwm" -- Update this to your DFPWM file path
+local filename = "encoded-20250417030525.txt" -- Update this to your DFPWM file path
 
 -- DFPWM decoder (standalone, Lua 5.1 compatible)
 local function makeDFPWMDecoder()
