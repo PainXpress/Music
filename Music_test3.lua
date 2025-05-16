@@ -1,5 +1,5 @@
 -- Configuration
-local filename = "encoded-20250417030525.txt" -- Update this to your DFPWM file path
+local filename = "your_song.dfpwm" -- Update this to your DFPWM file path
 
 -- DFPWM decoder (standalone, Lua 5.1 compatible)
 local function makeDFPWMDecoder()
@@ -43,7 +43,7 @@ local function findSpeaker()
     return nil
 end
 
--- Playback function
+-- Playback function using playSound for tones
 local function playDFPWM(path)
     -- Find speaker
     local speakerSide = findSpeaker()
@@ -56,11 +56,11 @@ local function playDFPWM(path)
         error("Failed to wrap speaker peripheral on side: " .. speakerSide)
     end
 
-    -- Check for playAudio support (requires CC:Tweaked 1.80pr1 or later)
-    if not speaker.playAudio then
-        error("Speaker peripheral does not support playAudio method. CC:Tweaked 1.80pr1 or later is required. Run 'version' to check.")
+    -- Check for playSound support (more basic than playAudio)
+    if not speaker.playSound then
+        error("Speaker peripheral does not support playSound method. Check speaker compatibility.")
     end
-    print("playAudio method supported")
+    print("playSound method supported")
 
     local decoder = makeDFPWMDecoder()
 
@@ -71,7 +71,7 @@ local function playDFPWM(path)
     end
 
     -- Read and play in chunks
-    local chunkSize = 256 -- 256 bytes DFPWM -> ~2048 bytes PCM
+    local chunkSize = 256
     while true do
         local chunk = file.read(chunkSize)
         if not chunk or #chunk == 0 then break end
@@ -82,15 +82,18 @@ local function playDFPWM(path)
             break
         end
 
-        local success = speaker.playAudio(decoded)
-        while not success do
-            os.pullEvent("speaker_audio_empty")
-            success = speaker.playAudio(decoded)
+        -- Approximate audio with tones
+        for i = 1, #decoded do
+            local sample = string.byte(decoded, i) - 128 -- Convert back to signed (-128 to 127)
+            local frequency = 200 + (sample * 0.5) -- Map sample to frequency (200-254 Hz)
+            if frequency < 20 then frequency = 20 end -- Minimum frequency
+            speaker.playSound(frequency, 0.01) -- Play short tone (0.01s duration)
+            os.sleep(0.001) -- Small delay to prevent overlap
         end
     end
 
     file.close()
-    print("Playback finished.")
+    print("Playback finished (tone approximation).")
 end
 
 -- Run with error handling
