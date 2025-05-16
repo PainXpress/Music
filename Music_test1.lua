@@ -89,6 +89,7 @@ local function playDFPWM(path)
             local pitch = 0.5 + (sample + 128) / 255 * 1.5 -- Range: 0.5 to 2.0
             -- Play a note using a Minecraft note block sound
             speaker.playSound("minecraft:block.note_block.harp", 1.0, pitch)
+            print("Decoding chunk " .. i) -- Debugging print
             os.sleep(0.001) -- Small delay to prevent overlap
         end
     end
