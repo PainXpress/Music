@@ -1,5 +1,5 @@
 -- Configuration
-local filename = "encoded-20250417030525.txt" -- Update this to your DFPWM file path
+local filename = "encoded-20250417030525.txt" -- Updated to new DFPWM file path
 
 -- DFPWM decoder (standalone, Lua 5.1 compatible)
 local function makeDFPWMDecoder()
@@ -43,7 +43,7 @@ local function findSpeaker()
     return nil
 end
 
--- Playback function using playSound for tones
+-- Playback function using playSound with note block sounds
 local function playDFPWM(path)
     -- Find speaker
     local speakerSide = findSpeaker()
@@ -56,7 +56,7 @@ local function playDFPWM(path)
         error("Failed to wrap speaker peripheral on side: " .. speakerSide)
     end
 
-    -- Check for playSound support (more basic than playAudio)
+    -- Check for playSound support
     if not speaker.playSound then
         error("Speaker peripheral does not support playSound method. Check speaker compatibility.")
     end
@@ -82,18 +82,19 @@ local function playDFPWM(path)
             break
         end
 
-        -- Approximate audio with tones
+        -- Approximate audio with note block sounds
         for i = 1, #decoded do
             local sample = string.byte(decoded, i) - 128 -- Convert back to signed (-128 to 127)
-            local frequency = 200 + (sample * 0.5) -- Map sample to frequency (200-254 Hz)
-            if frequency < 20 then frequency = 20 end -- Minimum frequency
-            speaker.playSound(frequency, 0.01) -- Play short tone (0.01s duration)
+            -- Map sample to pitch (0.5 to 2.0, corresponding to note block pitches)
+            local pitch = 0.5 + (sample + 128) / 255 * 1.5 -- Range: 0.5 to 2.0
+            -- Play a note using a Minecraft note block sound
+            speaker.playSound("minecraft:block.note_block.harp", 1.0, pitch)
             os.sleep(0.001) -- Small delay to prevent overlap
         end
     end
 
     file.close()
-    print("Playback finished (tone approximation).")
+    print("Playback finished (note approximation).")
 end
 
 -- Run with error handling
@@ -102,5 +103,4 @@ local success, err = pcall(function()
 end)
 
 if not success then
-    printError("Error: " .. tostring(err))
-end
+    printError("Error: " ..
