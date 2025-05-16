@@ -103,4 +103,5 @@ local success, err = pcall(function()
 end)
 
 if not success then
-    printError("Error: " ..
+    printError("Error: " .. tostring(err))
+end
