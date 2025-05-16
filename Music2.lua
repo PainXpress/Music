@@ -7,7 +7,7 @@ if not song or song == "" then
     return
 end
 
-local server_ip = "<YOUR_PC_IP>"  -- Replace with your server's IP
+local server_ip = "162.120.185.230"  -- Updated to the public IP
 local url = "http://" .. server_ip .. ":8080/music?q=" .. textutils.urlEncode(song)
 print("Requesting song: " .. song)
 
