@@ -1,6 +1,5 @@
 -- Configuration
-local speakerSide = "right" -- Change to "left" or other side if needed
-local filename = "your_song.dfpwm" -- Ensure this matches your DFPWM file path
+local filename = "encoded-20250417030525.txt" -- Update this to your DFPWM file path
 
 -- DFPWM decoder (standalone, Lua 5.1 compatible)
 local function makeDFPWMDecoder()
@@ -15,7 +14,7 @@ local function makeDFPWMDecoder()
         for i = 1, #input do
             local byte = string.byte(input, i)
             for j = 0, 7 do
-                -- Extract bit (Lua 5.1 compatible, no bit32)
+                -- Extract bit (Lua 5.1 compatible)
                 local bit = math.floor(byte / 2^(7 - j)) % 2 == 1
                 local target = bit and 127 or -128
                 local diff = target - state.q
@@ -32,39 +31,57 @@ local function makeDFPWMDecoder()
     end
 end
 
--- Playback function
-local function playDFPWM(path, speakerSide)
-    -- Verify speaker
-    if not peripheral.isPresent(speakerSide) then
-        error("No peripheral found on side: " .. speakerSide)
+-- Auto-detect speaker
+local function findSpeaker()
+    local sides = peripheral.getNames()
+    for _, side in ipairs(sides) do
+        if peripheral.getType(side) == "speaker" then
+            print("Speaker found on side: " .. side)
+            return side
+        end
     end
-    if peripheral.getType(speakerSide) ~= "speaker" then
-        error("Peripheral on side " .. speakerSide .. " is not a speaker")
+    return nil
+end
+
+-- Playback function
+local function playDFPWM(path)
+    -- Find speaker
+    local speakerSide = findSpeaker()
+    if not speakerSide then
+        error("No speaker peripheral found. Use the 'peripherals' command to check connected devices.")
     end
 
     local speaker = peripheral.wrap(speakerSide)
+    if not speaker then
+        error("Failed to wrap speaker peripheral on side: " .. speakerSide)
+    end
+
+    -- Check for playAudio support (requires CC:Tweaked 1.80pr1 or later)
+    if not speaker.playAudio then
+        error("Speaker peripheral does not support playAudio method. CC:Tweaked 1.80pr1 or later is required. Run 'version' to check.")
+    end
+    print("playAudio method supported")
+
     local decoder = makeDFPWMDecoder()
 
     -- Open file
     local file = fs.open(path, "rb")
     if not file then
-        error("Failed to open file: " .. path .. ". Check if file exists and path is correct.")
+        error("Failed to open file: " .. path .. ". Check if file exists and path is correct. Use 'ls' to list files.")
     end
 
     -- Read and play in chunks
-    local chunkSize = 256 -- Smaller chunk size for smoother playback
+    local chunkSize = 256 -- 256 bytes DFPWM -> ~2048 bytes PCM
     while true do
         local chunk = file.read(chunkSize)
         if not chunk or #chunk == 0 then break end
 
-        -- Decode chunk (1 byte DFPWM -> 8 bytes PCM)
         local decoded = decoder(chunk)
         if #decoded == 0 then
             print("Warning: Decoded chunk is empty, skipping.")
             break
         end
 
-        -- Play audio, wait for speaker buffer to clear
         local success = speaker.playAudio(decoded)
         while not success do
             os.pullEvent("speaker_audio_empty")
@@ -78,7 +95,7 @@ end
 
 -- Run with error handling
 local success, err = pcall(function()
-    playDFPWM(filename, speakerSide)
+    playDFPWM(filename)
 end)
 
 if not success then
