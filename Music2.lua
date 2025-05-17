@@ -1,17 +1,18 @@
 local tape = peripheral.find("tape_drive") or error("No tape drive found")
 local args = {...}
-local song = table.concat(args, " ")
+local url = args[1]  -- Take the first argument as the YouTube URL
 
-if not song or song == "" then
-    print("Usage: Music2 <search query>")  -- Updated to match program name
+if not url or url == "" then
+    print("Usage: Music2 <YouTube URL>")
     return
 end
 
-local server_ip = "162.120.185.230"
-local url = "http://" .. server_ip .. ":8080/music?q=" .. textutils.urlEncode(song)
-print("Requesting song: " .. song)
+print("Sending URL to server: " .. url)
 
-local res, err = http.get(url, nil, true)
+-- Send the URL to the Python server
+local server_ip = "162.120.185.230"  -- Your public IP
+local request_url = "http://" .. server_ip .. ":8080/music?url=" .. textutils.urlEncode(url)
+local res, err = http.get(request_url, nil, true)
 if not res then
     print("Failed to get response from server: " .. (err or "Unknown error"))
     return
