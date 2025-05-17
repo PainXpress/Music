@@ -3,11 +3,11 @@ local args = {...}
 local song = table.concat(args, " ")
 
 if not song or song == "" then
-    print("Usage: ytplay <search query>")
+    print("Usage: Music2 <search query>")  -- Updated to match program name
     return
 end
 
-local server_ip = "162.120.185.230"  -- Updated to the public IP
+local server_ip = "162.120.185.230"
 local url = "http://" .. server_ip .. ":8080/music?q=" .. textutils.urlEncode(song)
 print("Requesting song: " .. song)
 
