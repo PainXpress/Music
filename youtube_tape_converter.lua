@@ -1,0 +1,247 @@
+-- Configuration
+local server_hostname = "ec2-3-147-78-217.us-east-2.compute.amazonaws.com" -- Use the hostname instead of IP
+-- OR use the public IP directly if hostname resolution is a problem:
+-- local server_ip = "YOUR_EC2_PUBLIC_IP" -- !!! Uncomment this and replace with your EC2 Public IP if using hostname fails !!!
+local server_port = 5000             -- The port your Flask server is listening on
+local convert_endpoint = "/convert"  -- The API endpoint for conversion request
+-- The download endpoint is /download/<filename> and will be provided in the response
+
+local output_tape_label = "youtube_music" -- Optional: Label for the tape
+
+-- Check if textutils.decodeJSON is available
+local json_decode_available = type(textutils) == "table" and type(textutils.decodeJSON) == "function"
+-- Check if textutils.serialize is available (for better error reporting)
+local json_serialize_available = type(textutils) == "table" and type(textutils.serialize) == "function"
+
+-- Function to find the connected tape drive peripheral automatically
+function findTapeDrive()
+    print("Searching for connected tape drive...")
+    local sides = peripheral.getNames() -- Get a list of sides with connected peripherals
+    for _, side in ipairs(sides) do
+        local peripheral_type = peripheral.getType(side) -- Get the type of the peripheral on this side
+        -- Check if the peripheral type string contains "tape" (case-insensitive)
+        if peripheral_type and string.find(string.lower(peripheral_type), "tape") then
+            print("Found tape drive on side: " .. side)
+            return peripheral.wrap(side) -- Wrap the peripheral and return it
+        end
+    end
+    return nil -- No tape drive found on any side
+end
+
+
+-- Function to send conversion request, get download URL, and download DFPWM data
+function getAndDownloadDFPWM(youtube_url)
+    print("Step 1: Requesting conversion from server...")
+    -- Construct the full URL for the conversion request
+    local convert_url
+    if server_ip then -- Check if server_ip is defined and prefer it
+        convert_url = "http://" .. server_ip .. ":" .. server_port .. convert_endpoint
+    else -- Otherwise use hostname
+        convert_url = "http://" .. server_hostname .. ":" .. server_port .. convert_endpoint
+    end
+
+    local headers = {
+        ["Content-Type"] = "application/json" -- We are sending JSON
+    }
+    local body = '{"youtube_url": "' .. youtube_url .. '"}' -- Manually constructed JSON body
+
+    print("Connecting to conversion endpoint: " .. convert_url)
+
+    -- Send the POST request to the conversion endpoint
+    local ok, response = pcall(http.post, convert_url, body, headers)
+
+    if not ok then
+        return nil, "HTTP POST request failed: " .. tostring(response) .. ". Check network, firewall, and server status."
+    end
+
+    -- *** Inspect Response from Conversion Request (expecting JSON) ***
+    local response_type = type(response)
+    print("Received response object type (conversion request): " .. response_type)
+
+    -- Standard response object should be userdata with methods
+    if response_type ~= "userdata" or type(response.getStatusCode) ~= "function" or type(response.readAll) ~= "function" or type(response.close) ~= "function" then
+         local error_message = "Received invalid response object from conversion request."
+         error_message = error_message .. " Type: " .. response_type .. "."
+
+         local response_preview = "N/A"
+         -- Attempt to get a preview based on its type
+         if response_type == "table" and json_serialize_available then
+             local success, serialized = pcall(textutils.serialize, response)
+             if success then response_preview = serialized:sub(1, 200) .. (#serialized > 200 and "..." or "") end
+         elseif response_type == "string" then
+             response_preview = response:sub(1, 200) .. (#response > 200 and "..." or "")
+         elseif response_type == "userdata" and type(response.readAll) == "function" then
+              local success, content = pcall(response.readAll)
+              if success then response_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end
+         end
+         -- Attempt to close the response object if it's a userdata type
+         if response_type == "userdata" and type(response.close) == "function" then pcall(response.close) end
+
+         return nil, error_message .. " Preview: " .. response_preview
+    end
+
+    -- If we are here, response is a userdata object, read status and body
+    local statusCode = response.getStatusCode()
+    local response_body = response.readAll() -- Read the response body (should be JSON string)
+    response.close() -- Close the response object
+
+    print("Server response status code (conversion request): " .. statusCode)
+    print("Received response body (conversion request): " .. response_body:sub(1, 200) .. (#response_body > 200 and "..." or ""))
+
+
+    if statusCode ~= 200 then
+        return nil, "Server returned error code " .. statusCode .. " for conversion request. Response: " .. response_body
+    end
+
+    -- Attempt to parse the JSON response body (should contain download_url)
+    if not json_decode_available then
+         return nil, "Cannot parse JSON response: textutils.decodeJSON is not available in this ComputerCraft environment."
+    end
+
+    local success, json_response = pcall(textutils.decodeJSON, response_body)
+
+    if not success or type(json_response) ~= "table" then
+         return nil, "Failed to parse JSON response from server, or response was not a table after decoding. Raw response: " .. response_body .. ". Decode error/result: " .. tostring(json_response)
+    end
+
+    -- Check if the parsed JSON response contains the download_url string
+    if type(json_response.download_url) ~= "string" then
+        return nil, "Server response JSON did not contain a valid 'download_url' string. Response: " .. response_body
+    end
+
+    local download_url = json_response.download_url
+    print("Successfully received download URL: " .. download_url)
+
+    print("Step 2: Downloading DFPWM file from URL...")
+
+    -- Use http.get to download the file from the provided URL
+    local ok_get, response_get = pcall(http.get, download_url)
+
+    if not ok_get then
+         return nil, "HTTP GET request for download failed: " .. tostring(response_get) .. ". Check network or if the download URL is accessible."
+    end
+
+    -- *** Inspect Response from Download Request (expecting binary data) ***
+    local response_get_type = type(response_get)
+    print("Received response object type (download request): " .. response_get_type)
+
+    -- Standard response object should be userdata with methods
+    if response_get_type ~= "userdata" or type(response_get.getStatusCode) ~= "function" or type(response_get.readAll) ~= "function" or type(response_get.close) ~= "function" then
+        local error_message = "Received invalid response object from download request."
+        error_message = error_message .. " Type: " .. response_get_type .. "."
+         local response_preview = "N/A"
+         if response_get_type == "table" and json_serialize_available then
+              local success, serialized = pcall(textutils.serialize, response_get)
+              if success then response_preview = serialized:sub(1, 200) .. (#serialized > 200 and "..." or "") end
+         elseif response_get_type == "string" then
+             response_preview = response_get:sub(1, 200) .. (#response_get > 200 and "..." or "")
+         end
+         -- Attempt to close the response object if it's a userdata type
+         if type(response_get) == "userdata" and type(response_get.close) == "function" then pcall(response_get.close) end
+
+         return nil, error_message .. " Preview: " .. response_preview
+    end
+
+    -- If we are here, response_get is a userdata object, read status and body
+    local statusCode_get = response_get.getStatusCode()
+    print("Server response status code (download): " .. statusCode_get)
+
+    if statusCode_get ~= 200 then
+        local error_body_get = response_get.readAll()
+        response_get.close()
+        return nil, "Server returned error code " .. statusCode_get .. " for download request. Response: " .. error_body_get
+    end
+
+    -- Read the DFPWM data from the download response body
+    local dfpwm_data = response_get.readAll() -- This should be the binary DFPWM data
+    response_get.close() -- Close the response object
+
+    print("Successfully downloaded DFPWM data (" .. #dfpwm_data .. " bytes).")
+
+    return dfpwm_data -- Return the DFPWM binary data
+end
+
+-- Function to write DFPWM data to the tape drive (same as before)
+function writeToTape(dfpwm_data, tape_peripheral)
+    print("Preparing to write to tape...")
+
+    if tape_peripheral == nil then
+        return false, "Internal error: Tape peripheral not provided to writeToTape function."
+    end
+
+    if not tape_peripheral.isReady() then
+         return false, "Tape drive is not ready. Ensure a tape is inserted and formatted."
+    end
+
+    -- Rewind and clear the tape before writing
+    print("Rewinding tape...")
+    tape_peripheral.rewind()
+    -- Note: Some older tape drive APIs might require formatting
+    -- print("Formatting tape...")
+    -- tape_peripheral.format() -- Use if your tape drive requires explicit formatting before writing
+
+    print("Writing DFPWM data to tape (" .. #dfpwm_data .. " bytes)...")
+    -- The tape peripheral's write function expects a string (binary data)
+    local success, message = pcall(tape_peripheral.write, dfpwm_data)
+
+    if not success then
+        return false, "Failed to write to tape: " .. message .. ". Ensure the tape is writable and large enough."
+    end
+
+    -- Optional: Label the tape
+    if output_tape_label and tape_peripheral.setLabel then
+        print("Labeling tape: " .. output_tape_label)
+        pcall(tape_peripheral.setLabel, output_tape_label) -- pcall in case setLabel isn't supported or tape is read-only
+    end
+
+    print("Finished writing to tape.")
+    return true
+end
+
+-- Main program execution
+print("YouTube to Tape Converter")
+print("-------------------------")
+
+-- Check if required textutils functions are available
+if not json_decode_available then
+    print("Error: Required ComputerCraft 'textutils.decodeJSON' function is not available.")
+    print("This program requires a ComputerCraft version that supports JSON decoding.")
+    return
+end
+-- textutils.serialize is only for error reporting, not strictly required for function
+
+
+-- Get YouTube URL from user input
+write("Enter YouTube URL: ")
+local youtube_url_input = read()
+
+if youtube_url_input == "" then
+    print("No URL entered. Exiting.")
+    return
+end
+
+-- Find the tape drive automatically
+local tape_peripheral = findTapeDrive()
+if tape_peripheral == nil then
+    print("Error: Could not find a connected Tape Drive peripheral. Ensure one is attached to the computer.")
+    return
+end
+
+-- Get and Download DFPWM data using the two-step process
+local dfpwm_data, err = getAndDownloadDFPWM(youtube_url_input)
+
+if dfpwm_data == nil then
+    print("Error during get/download process: " .. err)
+    return
+end
+
+-- Write data to the tape drive
+local write_ok, write_err = writeToTape(dfpwm_data, tape_peripheral) -- Pass the found peripheral
+
+if not write_ok then
+    print("Error writing to tape: " .. write_err)
+    return
+end
+
+print("Successfully converted and written to tape!")
+print("You can now play the tape in the Tape Drive.")
