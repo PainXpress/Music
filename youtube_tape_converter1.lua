@@ -35,7 +35,7 @@ function getDFPWM(youtube_url)
 
     local headers = {
         ["Content-Type"] = "application/json", -- Still indicate the content type is JSON
-        ["Accept"] = "application/octet-stream" -- Indicate we expect raw binary data
+        ["Accept"] = "application/octet-stream" -- Indicate we expect raw binary data (even though server sends text now, keep for later)
     }
     -- Manually create the JSON string for the request body
     local body = '{"youtube_url": "' .. youtube_url .. '"}' -- Manually construct JSON
@@ -46,27 +46,53 @@ function getDFPWM(youtube_url)
     -- Use http.post to send a POST request
     local ok, response = pcall(http.post, url, body, headers)
 
-    -- *** MORE ROBUST ERROR HANDLING START ***
+    -- *** MORE ROBUST ERROR HANDLING & INSPECTION START ***
     if not ok then
         -- pcall failed, the second return value is the error message string
         return nil, "HTTP request failed before getting response object: " .. tostring(response) .. ". Possible causes: Server not reachable, Security Group blocking, hostname resolution failure, or ComputerCraft network issue."
     end
 
-    -- Check if response is actually a valid response object before calling methods on it
-    -- A successful http.post call returns a userdata object with methods like getStatusCode, readAll, close
-    if response == nil or type(response) ~= "userdata" or type(response.getStatusCode) ~= "function" then
-         -- This case should ideally not happen if pcall returned true, but adds robustness
-         local response_content_preview = "N/A"
-         -- Attempt to read response content if it looks like it might have data
-         if type(response) == "userdata" and type(response.readAll) == "function" then
-              local success, content = pcall(response.readAll)
-              if success then response_content_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end -- Get first 200 chars
-              pcall(response.close) -- Try to close the response if it's a userdata object
+    local response_type = type(response)
+    print("Received response object type: " .. response_type)
+
+    -- Check if response is a standard response object (userdata with necessary methods)
+    if response_type ~= "userdata" or type(response.getStatusCode) ~= "function" or type(response.readAll) ~= "function" or type(response.close) ~= "function" then
+         -- If it's not a standard response object, inspect what it is
+         local error_message = "HTTP request returned an invalid response object after successful connection."
+         error_message = error_message .. " Response type: " .. response_type .. "."
+
+         local response_preview = "N/A"
+         -- Try to get a preview of the response content based on its type
+         if response_type == "table" then
+             -- If it's a table, try to serialize it for inspection
+             -- Need textutils.serialize for this, hope it exists if encodeJSON didn't
+             if type(textutils.serialize) == "function" then
+                 local success, serialized_table = pcall(textutils.serialize, response)
+                 if success then response_preview = serialized_table:sub(1, 200) .. (#serialized_table > 200 and "..." or "") end
+             else
+                 response_preview = "Cannot serialize table: textutils.serialize not available."
+             end
+         elseif response_type == "string" then
+             -- If it's a string, it might be an error message directly
+             response_preview = response:sub(1, 200) .. (#response > 200 and "..." or "")
+         elseif response_type == "userdata" then
+              -- If it's userdata but doesn't have expected methods, try reading if possible
+              if type(response.readAll) == "function" then
+                  local success, content = pcall(response.readAll)
+                  if success then response_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end
+                  pcall(response.close) -- Try to close if it's a userdata
+              end
          end
 
-         return nil, "HTTP request returned an invalid response object after successful connection. Response type: " .. type(response) .. ". Response preview: " .. response_content_preview .. ". Check server logs for unexpected output."
+         error_message = error_message .. " Response preview: " .. response_preview .. ". Check server logs for unexpected output or network interference."
+         -- Close the response object if it's a userdata type that wasn't closed yet
+         if response_type == "userdata" and type(response.close) == "function" and type(response.readAll) == "function" then
+              pcall(response.close) -- Attempt to close
+         end
+
+         return nil, error_message
     end
-    -- *** MORE ROBUST ERROR HANDLING END ***
+    -- *** MORE ROBUST ERROR HANDLING & INSPECTION END ***
 
 
     local statusCode = response.getStatusCode()
