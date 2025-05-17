@@ -4,14 +4,8 @@ local server_hostname = "ec2-3-147-78-217.us-east-2.compute.amazonaws.com" -- Us
 -- local server_ip = "YOUR_EC2_PUBLIC_IP" -- !!! Uncomment this and replace with your EC2 Public IP if using hostname fails !!!
 local server_port = 5000             -- The port your Flask server is listening on
 local convert_endpoint = "/convert"  -- The API endpoint for conversion request
--- The download endpoint is /download/<filename> and will be provided in the response
 
 local output_tape_label = "youtube_music" -- Optional: Label for the tape
-
--- Check if textutils.decodeJSON is available
-local json_decode_available = type(textutils) == "table" and type(textutils.decodeJSON) == "function"
--- Check if textutils.serialize is available (for better error reporting)
-local json_serialize_available = type(textutils) == "table" and type(textutils.serialize) == "function"
 
 -- Function to find the connected tape drive peripheral automatically
 function findTapeDrive()
@@ -19,7 +13,6 @@ function findTapeDrive()
     local sides = peripheral.getNames() -- Get a list of sides with connected peripherals
     for _, side in ipairs(sides) do
         local peripheral_type = peripheral.getType(side) -- Get the type of the peripheral on this side
-        -- Check if the peripheral type string contains "tape" (case-insensitive)
         if peripheral_type and string.find(string.lower(peripheral_type), "tape") then
             print("Found tape drive on side: " .. side)
             return peripheral.wrap(side) -- Wrap the peripheral and return it
@@ -29,47 +22,48 @@ function findTapeDrive()
 end
 
 
--- Function to send conversion request, get download URL, and download DFPWM data
+-- Function to send conversion request, get download URL (plain text), and download DFPWM data
 function getAndDownloadDFPWM(youtube_url)
-    print("Step 1: Requesting conversion from server...")
+    print("Step 1: Requesting conversion from server (expecting plain text URL)...")
     -- Construct the full URL for the conversion request
     local convert_url
-    if server_ip then -- Check if server_ip is defined and prefer it
+    if server_ip then
         convert_url = "http://" .. server_ip .. ":" .. server_port .. convert_endpoint
-    else -- Otherwise use hostname
+    else
         convert_url = "http://" .. server_hostname .. ":" .. server_port .. convert_endpoint
     end
 
+    -- Send the YouTube URL as a plain text request body
     local headers = {
-        ["Content-Type"] = "application/json" -- We are sending JSON
+        ["Content-Type"] = "text/plain" -- Indicate we are sending plain text
     }
-    local body = '{"youtube_url": "' .. youtube_url .. '"}' -- Manually constructed JSON body
+    local body = youtube_url -- Just send the URL string as the body
 
     print("Connecting to conversion endpoint: " .. convert_url)
 
-    -- Send the POST request to the conversion endpoint
+    -- Send the POST request
     local ok, response = pcall(http.post, convert_url, body, headers)
 
+    -- *** Inspect Response from Conversion Request (expecting plain text URL) ***
     if not ok then
         return nil, "HTTP POST request failed: " .. tostring(response) .. ". Check network, firewall, and server status."
     end
 
-    -- *** Inspect Response from Conversion Request (expecting JSON) ***
     local response_type = type(response)
     print("Received response object type (conversion request): " .. response_type)
 
-    -- Standard response object should be userdata with methods
+    -- Standard response object should be userdata with methods (getStatusCode, readAll, close)
     if response_type ~= "userdata" or type(response.getStatusCode) ~= "function" or type(response.readAll) ~= "function" or type(response.close) ~= "function" then
          local error_message = "Received invalid response object from conversion request."
          error_message = error_message .. " Type: " .. response_type .. "."
 
          local response_preview = "N/A"
-         -- Attempt to get a preview based on its type
-         if response_type == "table" and json_serialize_available then
-             local success, serialized = pcall(textutils.serialize, response)
-             if success then response_preview = serialized:sub(1, 200) .. (#serialized > 200 and "..." or "") end
-         elseif response_type == "string" then
+         -- Attempt to get a preview based on its type (without textutils.serialize)
+         if response_type == "string" then
              response_preview = response:sub(1, 200) .. (#response > 200 and "..." or "")
+         elseif response_type == "table" then
+             -- If it's a table, just indicate we received a table
+             response_preview = "Received a table structure."
          elseif response_type == "userdata" and type(response.readAll) == "function" then
               local success, content = pcall(response.readAll)
               if success then response_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end
@@ -77,42 +71,28 @@ function getAndDownloadDFPWM(youtube_url)
          -- Attempt to close the response object if it's a userdata type
          if response_type == "userdata" and type(response.close) == "function" then pcall(response.close) end
 
-         return nil, error_message .. " Preview: " .. response_preview
+         return nil, error_message .. " Preview: " .. response_preview .. ". Check server logs for actual response."
     end
 
     -- If we are here, response is a userdata object, read status and body
     local statusCode = response.getStatusCode()
-    local response_body = response.readAll() -- Read the response body (should be JSON string)
+    local download_url_raw = response.readAll() -- Read the response body (should be plain text URL)
     response.close() -- Close the response object
 
     print("Server response status code (conversion request): " .. statusCode)
-    print("Received response body (conversion request): " .. response_body:sub(1, 200) .. (#response_body > 200 and "..." or ""))
-
+    print("Received response body (conversion request): " .. download_url_raw:sub(1, 200) .. (#download_url_raw > 200 and "..." or ""))
 
     if statusCode ~= 200 then
-        return nil, "Server returned error code " .. statusCode .. " for conversion request. Response: " .. response_body
+        return nil, "Server returned error code " .. statusCode .. " for conversion request. Response: " .. download_url_raw
     end
 
-    -- Attempt to parse the JSON response body (should contain download_url)
-    if not json_decode_available then
-         return nil, "Cannot parse JSON response: textutils.decodeJSON is not available in this ComputerCraft environment."
+    -- The response body should be the download URL string (trim any whitespace)
+    local download_url = download_url_raw.trim and download_url_raw.trim() or download_url_raw -- Use trim() if available, otherwise use as is
+    if type(download_url) ~= "string" or download_url == "" then
+         return nil, "Received invalid or empty download URL string in response: " .. tostring(download_url)
     end
 
-    local success, json_response = pcall(textutils.decodeJSON, response_body)
-
-    if not success or type(json_response) ~= "table" then
-         return nil, "Failed to parse JSON response from server, or response was not a table after decoding. Raw response: " .. response_body .. ". Decode error/result: " .. tostring(json_response)
-    end
-
-    -- Check if the parsed JSON response contains the download_url string
-    if type(json_response.download_url) ~= "string" then
-        return nil, "Server response JSON did not contain a valid 'download_url' string. Response: " .. response_body
-    end
-
-    local download_url = json_response.download_url
-    print("Successfully received download URL: " .. download_url)
-
-    print("Step 2: Downloading DFPWM file from URL...")
+    print("Step 2: Downloading DFPWM file from URL: " .. download_url)
 
     -- Use http.get to download the file from the provided URL
     local ok_get, response_get = pcall(http.get, download_url)
@@ -130,13 +110,15 @@ function getAndDownloadDFPWM(youtube_url)
         local error_message = "Received invalid response object from download request."
         error_message = error_message .. " Type: " .. response_get_type .. "."
          local response_preview = "N/A"
-         if response_get_type == "table" and json_serialize_available then
-              local success, serialized = pcall(textutils.serialize, response_get)
-              if success then response_preview = serialized:sub(1, 200) .. (#serialized > 200 and "..." or "") end
-         elseif response_get_type == "string" then
+         if response_get_type == "string" then
              response_preview = response_get:sub(1, 200) .. (#response_get > 200 and "..." or "")
+         elseif response_get_type == "table" then
+              response_preview = "Received a table structure."
+         elseif response_get_type == "userdata" and type(response_get.readAll) == "function" then
+              local success, content = pcall(response_get.readAll)
+              if success then response_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end
          end
-         -- Attempt to close the response object if it's a userdata type
+         -- Attempt to close the response object if it's a userdata type that wasn't closed yet
          if type(response_get) == "userdata" and type(response_get.close) == "function" then pcall(response_get.close) end
 
          return nil, error_message .. " Preview: " .. response_preview
@@ -201,15 +183,6 @@ end
 -- Main program execution
 print("YouTube to Tape Converter")
 print("-------------------------")
-
--- Check if required textutils functions are available
-if not json_decode_available then
-    print("Error: Required ComputerCraft 'textutils.decodeJSON' function is not available.")
-    print("This program requires a ComputerCraft version that supports JSON decoding.")
-    return
-end
--- textutils.serialize is only for error reporting, not strictly required for function
-
 
 -- Get YouTube URL from user input
 write("Enter YouTube URL: ")
