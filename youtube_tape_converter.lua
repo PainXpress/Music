@@ -1,5 +1,7 @@
 -- Configuration
 local server_hostname = "ec2-3-147-78-217.us-east-2.compute.amazonaws.com" -- Use the hostname instead of IP
+-- OR use the public IP directly if hostname resolution is a problem:
+-- local server_ip = "YOUR_EC2_PUBLIC_IP" -- !!! Uncomment this and replace with your EC2 Public IP if using hostname fails !!!
 local server_port = 5000             -- The port your Flask server is listening on
 local endpoint = "/convert"          -- The API endpoint on your Flask server
 local output_tape_label = "youtube_music" -- Optional: Label for the tape
@@ -23,8 +25,14 @@ end
 -- Function to send request to EC2 server and get DFPWM data
 function getDFPWM(youtube_url)
     print("Sending request to server...")
-    -- Use the hostname in the URL
-    local url = "http://" .. server_hostname .. ":" .. server_port .. endpoint
+    -- Construct the full URL using either hostname or IP
+    local url
+    if server_ip then -- Check if server_ip is defined and prefer it
+        url = "http://" .. server_ip .. ":" .. server_port .. endpoint
+    else -- Otherwise use hostname
+        url = "http://" .. server_hostname .. ":" .. server_port .. endpoint
+    end
+
     local headers = {
         ["Content-Type"] = "application/json", -- Still indicate the content type is JSON
         ["Accept"] = "application/octet-stream" -- Indicate we expect raw binary data
@@ -36,18 +44,36 @@ function getDFPWM(youtube_url)
     -- print("Request body: " .. body) -- Optional: uncomment for debugging the request body
 
     -- Use http.post to send a POST request
-    -- This requires a ComputerCraft version that supports http.post with body and headers
     local ok, response = pcall(http.post, url, body, headers)
 
+    -- *** MORE ROBUST ERROR HANDLING START ***
     if not ok then
-        return nil, "HTTP request failed: " .. response .. ". Ensure the server is running and accessible, and Security Group allows traffic from the Minecraft server IP."
+        -- pcall failed, the second return value is the error message string
+        return nil, "HTTP request failed before getting response object: " .. tostring(response) .. ". Possible causes: Server not reachable, Security Group blocking, hostname resolution failure, or ComputerCraft network issue."
     end
+
+    -- Check if response is actually a valid response object before calling methods on it
+    -- A successful http.post call returns a userdata object with methods like getStatusCode, readAll, close
+    if response == nil or type(response) ~= "userdata" or type(response.getStatusCode) ~= "function" then
+         -- This case should ideally not happen if pcall returned true, but adds robustness
+         local response_content_preview = "N/A"
+         -- Attempt to read response content if it looks like it might have data
+         if type(response) == "userdata" and type(response.readAll) == "function" then
+              local success, content = pcall(response.readAll)
+              if success then response_content_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end -- Get first 200 chars
+              pcall(response.close) -- Try to close the response if it's a userdata object
+         end
+
+         return nil, "HTTP request returned an invalid response object after successful connection. Response type: " .. type(response) .. ". Response preview: " .. response_content_preview .. ". Check server logs for unexpected output."
+    end
+    -- *** MORE ROBUST ERROR HANDLING END ***
+
 
     local statusCode = response.getStatusCode()
     print("Server response status code: " .. statusCode)
 
     if statusCode ~= 200 then
-        -- Server returned an error
+        -- Server returned an error response (status code is not 200)
         local error_body = response.readAll()
         response.close()
         return nil, "Server returned error code " .. statusCode .. ": " .. error_body
@@ -123,12 +149,7 @@ local dfpwm_data, err = getDFPWM(youtube_url_input)
 
 if dfpwm_data == nil then
     print("Error getting DFPWM data: " .. err)
-    -- Check if the error is related to server response or network
-    if string.find(err, "HTTP request failed") then
-         print("Possible network issue or server not running. Check EC2 server logs and Security Group.")
-    elseif string.find(err, "Server returned error code") then
-         print("Server reported an error. Check EC2 server logs for details.")
-    end
+    -- The error message from getDFPWM will include details
     return
 end
 
