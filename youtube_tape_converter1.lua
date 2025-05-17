@@ -4,12 +4,9 @@ local server_hostname = "ec2-3-147-78-217.us-east-2.compute.amazonaws.com" -- Us
 -- local server_ip = "YOUR_EC2_PUBLIC_IP" -- !!! Uncomment this and replace with your EC2 Public IP if using hostname fails !!!
 local server_port = 5000             -- The port your Flask server is listening on
 local convert_endpoint = "/convert"  -- The API endpoint for conversion request
+local download_endpoint = "/download/latest.dfpwm" -- Fixed endpoint for the latest file
 
 local output_tape_label = "youtube_music" -- Optional: Label for the tape
-
--- Check if textutils.serialize is available (for slightly better error reporting if needed)
-local json_serialize_available = type(textutils) == "table" and type(textutils.serialize) == "function"
-
 
 -- Function to find the connected tape drive peripheral automatically
 function findTapeDrive()
@@ -26,9 +23,9 @@ function findTapeDrive()
 end
 
 
--- Function to send conversion request, get download URL (plain text), and download DFPWM data
-function getAndDownloadDFPWM(youtube_url)
-    print("Step 1: Requesting conversion from server (expecting plain text URL)...")
+-- Function to send conversion request (plain text) and download latest DFPWM via GET
+function triggerConversionAndDownload()
+    print("Step 1: Triggering conversion on server (sending plain text URL)...")
     -- Construct the full URL for the conversion request
     local convert_url
     if server_ip then
@@ -37,18 +34,25 @@ function getAndDownloadDFPWM(youtube_url)
         convert_url = "http://" .. server_hostname .. ":" .. server_port .. convert_endpoint
     end
 
+    -- Get YouTube URL from user input (moved here as it's part of the POST body)
+    write("Enter YouTube URL: ")
+    local youtube_url_input = read()
+    if youtube_url_input == "" then
+        return nil, "No URL entered."
+    end
+
     -- Send the YouTube URL as a plain text request body
     local headers = {
         ["Content-Type"] = "text/plain" -- Indicate we are sending plain text
     }
-    local body = youtube_url -- Just send the URL string as the body
+    local body = youtube_url_input -- Just send the URL string as the body
 
     print("Connecting to conversion endpoint: " .. convert_url)
 
-    -- Send the POST request
+    -- Send the POST request to trigger conversion
     local ok, response = pcall(http.post, convert_url, body, headers)
 
-    -- *** Inspect Response from Conversion Request (expecting plain text URL) ***
+    -- *** Inspect Response from Conversion Request (expecting simple text confirmation) ***
     if not ok then
         return nil, "HTTP POST request failed: " .. tostring(response) .. ". Check network, firewall, and server status."
     end
@@ -62,54 +66,60 @@ function getAndDownloadDFPWM(youtube_url)
          error_message = error_message .. " Type: " .. response_type .. "."
 
          local response_preview = "N/A"
-         -- Attempt to get a preview based on its type (without textutils.serialize)
+         -- Attempt to get a preview based on its type
          if response_type == "string" then
              response_preview = response:sub(1, 200) .. (#response > 200 and "..." or "")
          elseif response_type == "table" then
-             -- If it's a table, just indicate we received a table
-             response_preview = "Received a table structure."
+             response_preview = "Received a table structure." # Indicate it was a table
          elseif response_type == "userdata" and type(response.readAll) == "function" then
               local success, content = pcall(response.readAll)
               if success then response_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end
          end
-         -- Attempt to close the response object if it's a userdata type
-         if response_type == "userdata" and type(response.close) == "function" then pcall(response.close) end
+         if response_type == "userdata" and type(response.close) == "function" then pcall(response.close) end # Attempt to close
 
          return nil, error_message .. " Preview: " .. response_preview .. ". Check server logs for actual response."
     end
 
-    -- If we are here, response is a userdata object, read status and body
+    # If we are here, response is a userdata object, read status and body
     local statusCode = response.getStatusCode()
-    local download_url_raw = response.readAll() -- Read the response body (should be plain text URL)
-    response.close() -- Close the response object
+    local response_body = response.readAll() # Read the response body (should be plain text confirmation)
+    response.close()
 
     print("Server response status code (conversion request): " .. statusCode)
-    print("Received response body (conversion request): " .. download_url_raw:sub(1, 200) .. (#download_url_raw > 200 and "..." or ""))
+    print("Received response body (conversion request): " .. response_body:sub(1, 200) .. (#response_body > 200 and "..." or ""))
+
 
     if statusCode ~= 200 then
-        return nil, "Server returned error code " .. statusCode .. " for conversion request. Response: " .. download_url_raw
+        return nil, "Server returned error code " .. statusCode .. " for conversion request. Response: " .. response_body
     end
 
-    -- The response body should be the download URL string (trim any whitespace)
-    local download_url = download_url_raw.trim and download_url_raw.trim() or download_url_raw -- Use trim() if available, otherwise use as is
-    if type(download_url) ~= "string" or download_url == "" or not download_url.startswith("http") then
-         return nil, "Received invalid or empty download URL string in response: " .. tostring(download_url) .. ". Expected a URL starting with http."
+    print("Conversion triggered successfully. Waiting briefly before download.")
+    sleep(5) # Wait a few seconds to ensure the server finishes processing and saving
+
+    print("Step 2: Downloading latest DFPWM file via GET...")
+
+    # Construct the full URL for the download
+    local download_url
+    if server_ip then
+        download_url = "http://" .. server_ip .. ":" .. server_port .. download_endpoint
+    else
+        download_url = "http://" .. server_hostname .. ":" .. server_port .. download_endpoint
     end
 
-    print("Step 2: Downloading DFPWM file from URL: " .. download_url)
+    print("Connecting to download endpoint: " .. download_url)
 
-    -- Use http.get to download the file from the provided URL
+    # Use http.get to download the file
     local ok_get, response_get = pcall(http.get, download_url)
 
     if not ok_get then
          return nil, "HTTP GET request for download failed: " .. tostring(response_get) .. ". Check network or if the download URL is accessible."
     end
 
-    -- *** Inspect Response from Download Request (expecting binary data) ***
+    # *** Inspect Response from Download Request (expecting binary DFPWM data) ***
     local response_get_type = type(response_get)
     print("Received response object type (download request): " .. response_get_type)
 
-    -- Standard response object should be userdata with methods
+    # Standard response object should be userdata with methods
     if response_get_type ~= "userdata" or type(response_get.getStatusCode) ~= "function" or type(response_get.readAll) ~= "function" or type(response_get.close) ~= "function" then
         local error_message = "Received invalid response object from download request."
         error_message = error_message .. " Type: " .. response_get_type .. "."
@@ -122,13 +132,12 @@ function getAndDownloadDFPWM(youtube_url)
               local success, content = pcall(response_get.readAll)
               if success then response_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end
          end
-         -- Attempt to close the response object if it's a userdata type that wasn't closed yet
-         if type(response_get) == "userdata" and type(response_get.close) == "function" then pcall(response_get.close) end
+         if type(response_get) == "userdata" and type(response_get.close) == "function" then pcall(response_get.close) end # Attempt to close
 
          return nil, error_message .. " Preview: " .. response_preview
     end
 
-    -- If we are here, response_get is a userdata object, read status and body
+    # If we are here, response_get is a userdata object, read status and body
     local statusCode_get = response_get.getStatusCode()
     print("Server response status code (download): " .. statusCode_get)
 
@@ -138,13 +147,13 @@ function getAndDownloadDFPWM(youtube_url)
         return nil, "Server returned error code " .. statusCode_get .. " for download request. Response: " .. error_body_get
     end
 
-    -- Read the DFPWM data from the download response body
-    local dfpwm_data = response_get.readAll() -- This should be the binary DFPWM data
-    response_get.close() -- Close the response object
+    # Read the DFPWM data from the download response body
+    local dfpwm_data = response_get.readAll() # This should be the binary DFPWM data
+    response_get.close() # Close the response object
 
     print("Successfully downloaded DFPWM data (" .. #dfpwm_data .. " bytes).")
 
-    return dfpwm_data -- Return the DFPWM binary data
+    return dfpwm_data # Return the DFPWM binary data
 end
 
 -- Function to write DFPWM data to the tape drive (same as before)
@@ -164,10 +173,10 @@ function writeToTape(dfpwm_data, tape_peripheral)
     tape_peripheral.rewind()
     -- Note: Some older tape drive APIs might require formatting
     -- print("Formatting tape...")
-    -- tape_peripheral.format() -- Use if your tape drive requires explicit formatting before writing
+    -- tape_peripheral.format() # Use if your tape drive requires explicit formatting before writing
 
     print("Writing DFPWM data to tape (" .. #dfpwm_data .. " bytes)...")
-    -- The tape peripheral's write function expects a string (binary data)
+    # The tape peripheral's write function expects a string (binary data)
     local success, message = pcall(tape_peripheral.write, dfpwm_data)
 
     if not success then
@@ -177,7 +186,7 @@ function writeToTape(dfpwm_data, tape_peripheral)
     -- Optional: Label the tape
     if output_tape_label and tape_peripheral.setLabel then
         print("Labeling tape: " .. output_tape_label)
-        pcall(tape_peripheral.setLabel, output_tape_label) -- pcall in case setLabel isn't supported or tape is read-only
+        pcall(tape_peripheral.setLabel, output_tape_label) # pcall in case setLabel isn't supported or tape is read-only
     end
 
     print("Finished writing to tape.")
@@ -188,15 +197,6 @@ end
 print("YouTube to Tape Converter")
 print("-------------------------")
 
--- Get YouTube URL from user input
-write("Enter YouTube URL: ")
-local youtube_url_input = read()
-
-if youtube_url_input == "" then
-    print("No URL entered. Exiting.")
-    return
-end
-
 -- Find the tape drive automatically
 local tape_peripheral = findTapeDrive()
 if tape_peripheral == nil then
@@ -204,8 +204,8 @@ if tape_peripheral == nil then
     return
 end
 
--- Get and Download DFPWM data using the two-step process
-local dfpwm_data, err = getAndDownloadDFPWM(youtube_url_input)
+# Trigger conversion, get URL, and download data
+local dfpwm_data, err = triggerConversionAndDownload()
 
 if dfpwm_data == nil then
     print("Error during get/download process: " .. err)
@@ -213,7 +213,7 @@ if dfpwm_data == nil then
 end
 
 -- Write data to the tape drive
-local write_ok, write_err = writeToTape(dfpwm_data, tape_peripheral) -- Pass the found peripheral
+local write_ok, write_err = writeToTape(dfpwm_data, tape_peripheral) # Pass the found peripheral
 
 if not write_ok then
     print("Error writing to tape: " .. write_err)
