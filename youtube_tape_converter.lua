@@ -49,7 +49,7 @@ function triggerConversionAndDownload()
 
     print("Connecting to conversion endpoint: " .. convert_url)
 
-    -- Send the POST request to trigger conversion
+    -- Send the POST request
     local ok, response = pcall(http.post, convert_url, body, headers)
 
     -- *** Inspect Response from Conversion Request (expecting simple text confirmation) ***
@@ -68,12 +68,12 @@ function triggerConversionAndDownload()
          local response_preview = "N/A"
          -- Attempt to get a preview based on its type
          if response_type == "string" then
-             response_preview = response:sub(1, 200) .. (#response > 200 and "..." or "")
+             response_preview = response:sub(1, 200) .. (string.len(response) > 200 and "..." or "") # Use string.len()
          elseif response_type == "table" then
              response_preview = "Received a table structure." # Indicate it was a table
          elseif response_type == "userdata" and type(response.readAll) == "function" then
               local success, content = pcall(response.readAll)
-              if success then response_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end
+              if success then response_preview = content:sub(1, 200) .. ( string.len(content) > 200 and "..." or "") end # Use string.len()
          end
          if response_type == "userdata" and type(response.close) == "function" then pcall(response.close) end # Attempt to close
 
@@ -86,36 +86,39 @@ function triggerConversionAndDownload()
     response.close()
 
     print("Server response status code (conversion request): " .. statusCode)
-    print("Received response body (conversion request): " .. response_body:sub(1, 200) .. (#response_body > 200 and "..." or ""))
+    print("Received response body (conversion request): " .. response_body:sub(1, 200) .. (string.len(response_body) > 200 and "..." or "")) # Use string.len()
 
 
     if statusCode ~= 200 then
         return nil, "Server returned error code " .. statusCode .. " for conversion request. Response: " .. response_body
     end
 
+    # We expect a plain text confirmation string here.
+    # We don't need to parse a URL from this response anymore.
+
     print("Conversion triggered successfully. Waiting briefly before download.")
     sleep(5) # Wait a few seconds to ensure the server finishes processing and saving
 
     print("Step 2: Downloading latest DFPWM file via GET...")
 
-    # Construct the full URL for the download
-    local download_url
+    # Construct the full URL for the download (using the fixed endpoint)
+    local download_url_full
     if server_ip then
-        download_url = "http://" .. server_ip .. ":" .. server_port .. download_endpoint
+        download_url_full = "http://" .. server_ip .. ":" .. server_port .. download_endpoint
     else
-        download_url = "http://" .. server_hostname .. ":" .. server_port .. download_endpoint
+        download_url_full = "http://" .. server_hostname .. ":" .. server_port .. download_endpoint
     end
 
-    print("Connecting to download endpoint: " .. download_url)
+    print("Connecting to download endpoint: " .. download_url_full)
 
     # Use http.get to download the file
-    local ok_get, response_get = pcall(http.get, download_url)
+    local ok_get, response_get = pcall(http.get, download_url_full)
 
     if not ok_get then
          return nil, "HTTP GET request for download failed: " .. tostring(response_get) .. ". Check network or if the download URL is accessible."
     end
 
-    # *** Inspect Response from Download Request (expecting binary DFPWM data) ***
+    # *** Inspect Response from Download Request (expecting binary data) ***
     local response_get_type = type(response_get)
     print("Received response object type (download request): " .. response_get_type)
 
@@ -125,12 +128,12 @@ function triggerConversionAndDownload()
         error_message = error_message .. " Type: " .. response_get_type .. "."
          local response_preview = "N/A"
          if response_get_type == "string" then
-             response_preview = response_get:sub(1, 200) .. (#response_get > 200 and "..." or "")
+             response_preview = response_get:sub(1, 200) .. (string.len(response_get) > 200 and "..." or "") # Use string.len()
          elseif response_get_type == "table" then
               response_preview = "Received a table structure."
          elseif response_get_type == "userdata" and type(response_get.readAll) == "function" then
               local success, content = pcall(response_get.readAll)
-              if success then response_preview = content:sub(1, 200) .. ( #content > 200 and "..." or "") end
+              if success then response_preview = content:sub(1, 200) .. ( string.len(content) > 200 and "..." or "") end
          end
          if type(response_get) == "userdata" and type(response_get.close) == "function" then pcall(response_get.close) end # Attempt to close
 
@@ -151,7 +154,7 @@ function triggerConversionAndDownload()
     local dfpwm_data = response_get.readAll() # This should be the binary DFPWM data
     response_get.close() # Close the response object
 
-    print("Successfully downloaded DFPWM data (" .. #dfpwm_data .. " bytes).")
+    print("Successfully downloaded DFPWM data (" .. string.len(dfpwm_data) .. " bytes).") # Use string.len()
 
     return dfpwm_data # Return the DFPWM binary data
 end
@@ -175,7 +178,7 @@ function writeToTape(dfpwm_data, tape_peripheral)
     -- print("Formatting tape...")
     -- tape_peripheral.format() # Use if your tape drive requires explicit formatting before writing
 
-    print("Writing DFPWM data to tape (" .. #dfpwm_data .. " bytes)...")
+    print("Writing DFPWM data to tape (" .. string.len(dfpwm_data) .. " bytes)...") # Use string.len()
     # The tape peripheral's write function expects a string (binary data)
     local success, message = pcall(tape_peripheral.write, dfpwm_data)
 
