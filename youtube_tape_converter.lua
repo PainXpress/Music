@@ -7,6 +7,10 @@ local convert_endpoint = "/convert"  -- The API endpoint for conversion request
 
 local output_tape_label = "youtube_music" -- Optional: Label for the tape
 
+-- Check if textutils.serialize is available (for slightly better error reporting if needed)
+local json_serialize_available = type(textutils) == "table" and type(textutils.serialize) == "function"
+
+
 -- Function to find the connected tape drive peripheral automatically
 function findTapeDrive()
     print("Searching for connected tape drive...")
@@ -88,8 +92,8 @@ function getAndDownloadDFPWM(youtube_url)
 
     -- The response body should be the download URL string (trim any whitespace)
     local download_url = download_url_raw.trim and download_url_raw.trim() or download_url_raw -- Use trim() if available, otherwise use as is
-    if type(download_url) ~= "string" or download_url == "" then
-         return nil, "Received invalid or empty download URL string in response: " .. tostring(download_url)
+    if type(download_url) ~= "string" or download_url == "" or not download_url.startswith("http") then
+         return nil, "Received invalid or empty download URL string in response: " .. tostring(download_url) .. ". Expected a URL starting with http."
     end
 
     print("Step 2: Downloading DFPWM file from URL: " .. download_url)
