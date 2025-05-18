@@ -41,64 +41,112 @@ local function sendRequest(method, endpoint, data)
     end)
 
     if success then
-        response = result
-        if response then
-            response_headers = response.getResponseHeaders() -- Get all response headers
-            status_code = response.getStatusCode()
-            status_text = response.getStatusText()
+        response = result -- result is the response object or nil
 
-            -- Read the raw response body
-            raw_response_body = response.readAll()
-            response.close() -- Close the response object
+        -- --- NEW DEBUG PRINTS FOR RESPONSE OBJECT ---
+        print("DEBUG CC: http.post/get call was successful in pcall.", file=io.stderr)
+        print("DEBUG CC: Type of 'response' object is: " .. type(response), file=io.stderr)
+        if type(response) == "table" or type(response) == "userdata" then -- Check if it's something we can iterate/inspect
+            print("DEBUG CC: Available methods/fields on the response object:", file=io.stderr)
+            local method_count = 0
+            for name, value in pairs(response) do
+                -- Only print functions and non-table, non-userdata values for brevity
+                if type(value) == "function" or (type(value) ~= "table" and type(value) ~= "userdata") then
+                    print("DEBUG CC:   - " .. tostring(name) .. " (" .. type(value) .. ")", file=io.stderr)
+                    method_count = method_count + 1
+                end
+            end
+            if method_count == 0 then print("DEBUG CC:   (No simple methods/fields found directly on object)", file=io.stderr) end
+        else
+             print("DEBUG CC:   (Response object is not a table or userdata, cannot list methods/fields directly)", file=io.stderr)
+        end
+        -- --- END NEW DEBUG PRINTS ---
 
-            print("DEBUG CC: Received Status Code:", tostring(status_code))
-            print("DEBUG CC: Received Status Text:", tostring(status_text or "N/A"))
-            print("DEBUG CC: Received Response Headers:", textutils.serialize(response_headers)) -- Debug print response headers
-            print("DEBUG CC: Received Raw Response Body (start):", raw_response_body:sub(1, 500)) -- Debug print raw body
-            if string.len(raw_response_body) > 500 then print("DEBUG CC: ... (response body truncated for print)") end
+
+        if response then -- Check if response is not nil (This check seems to pass based on error)
+            -- The error was happening around line 47 because getStatusCode was nil
+            -- Let's try calling these with pcall to catch errors if they are missing
+            local success_status_code, status_code_val = pcall(response.getStatusCode, response) -- Use pcall and pass response object as self
+            if success_status_code then status_code = status_code_val else printError("DEBUG CC: Error calling getStatusCode: " .. tostring(status_code_val), file=io.stderr) end
+
+            local success_status_text, status_text_val = pcall(response.getStatusText, response) -- Use pcall
+             if success_status_text then status_text = status_text_val else printError("DEBUG CC: Error calling getStatusText: " .. tostring(status_text_val), file=io.stderr) end
+
+            local success_headers, headers_val = pcall(response.getResponseHeaders, response) -- Use pcall
+             if success_headers then response_headers = headers_val else printError("DEBUG CC: Error calling getResponseHeaders: " .. tostring(headers_val), file=io.stderr) end
+
+
+            -- Read the raw response body - this might also fail if readAll is missing
+            local success_readAll, raw_response_body_val = pcall(response.readAll, response) -- Use pcall
+             if success_readAll then raw_response_body = raw_response_body_val else printError("DEBUG CC: Error calling readAll: " .. tostring(raw_response_body_val), file=io.stderr) end
+
+            -- response.close() -- Close the response object - this might also fail
+            local success_close, close_val = pcall(response.close, response)
+            if not success_close then printError("DEBUG CC: Error calling close: " .. tostring(close_val), file=io.stderr) end
+
+
+            -- Print debug info we successfully retrieved (now safely with pcalls)
+            print("DEBUG CC: Retrieved Status Code (via pcall):", tostring(status_code or "N/A"))
+            print("DEBUG CC: Retrieved Status Text (via pcall):", tostring(status_text or "N/A"))
+            if response_headers then print("DEBUG CC: Retrieved Response Headers (via pcall):", textutils.serialize(response_headers)) else print("DEBUG CC: Failed to retrieve Response Headers.", file=io.stderr) end
+            print("DEBUG CC: Retrieved Raw Response Body (start, via pcall):", tostring(raw_response_body or ""):sub(1, 500)) # Handle nil raw_response_body
+            if raw_response_body and string.len(raw_response_body) > 500 then print("DEBUG CC: ... (response body truncated for print)") end
+
+
+            -- We can now proceed with JSON decoding if we got a status code and body
+             if status_code and raw_response_body then
+                -- Check for successful HTTP status codes (2xx) before processing body
+                if status_code >= 200 and status_code < 300 then
+                    -- Try to decode JSON only if status is successful
+                    local json_decode_func = textutils.parseJSON or textutils.unserializeJSON -- Try parseJSON or unserializeJSON
+                    if json_decode_func then
+                        local success_decode, json_response = pcall(json_decode_func, raw_response_body)
+                         if success_decode and type(json_response) == "table" then
+                              print("DEBUG CC: Decoded JSON response successfully.")
+                              return json_response, status_code -- Return decoded JSON table
+                         else
+                              printError("CC Error: Received 2xx status but failed to decode response body as JSON.")
+                              printError("CC Error: Raw response body was: " .. tostring(raw_response_body))
+                              return nil, status_code -- Indicate failure to decode JSON
+                         end
+                    else
+                         printError("CC Error: No suitable JSON decode function found (looked for parseJSON, unserializeJSON).")
+                         printError("CC Error: Raw response body was: " .. tostring(raw_response_body))
+                         return nil, status_code
+                    end
+
+                else
+                    -- Error status code returned by server
+                    printError("CC Error: Server returned error status: " .. tostring(status_code) .. " " .. tostring(status_text or ""))
+                    printError("CC Error: Error details (raw body): " .. tostring(raw_response_body))
+                    return nil, status_code
+                end
+            elseif status_code then
+                -- Got a status code but no body (maybe a 204 No Content, or readAll failed)
+                 printError("CC Error: Received status code " .. tostring(status_code) .. " but no response body was retrieved.", file=io.stderr)
+                 return nil, status_code
+            elseif raw_response_body then
+                -- Got a body but no status code (very unusual)
+                 printError("CC Error: Received response body but no status code was retrieved.", file=io.stderr)
+                 return nil, nil -- Cannot return meaningful status
+            else
+                -- Neither status code nor body retrieved successfully
+                 printError("CC Error: Failed to retrieve both status code and response body.", file=io.stderr)
+                 return nil, nil
+            end
 
 
         else
-             -- This case handles where http.post/get returns nil response object
-             printError("CC Error: HTTP request returned nil response object.")
+             -- This else block should only be reached if http.post/get returned nil initially
+             printError("CC Error: HTTP request returned nil response object unexpectedly.", file=io.stderr)
              return nil, nil -- Return nil for both body and status on nil response
         end
 
     else
-        -- pcall failed, likely a connection error or low-level issue
-        http_error = result
-        printError("CC Error: HTTP request pcall failed: " .. tostring(http_error))
+        -- pcall failed, likely a connection error or low-level issue (timeout, connection refused etc.)
+        http_error = result -- result is the error message
+        printError("CC Error: HTTP request pcall failed: " .. tostring(http_error), file=io.stderr)
         return nil, nil -- Return nil for both body and status on pcall failure
-    end
-
-
-    -- Check for successful HTTP status codes (2xx) before processing body
-    if status_code and status_code >= 200 and status_code < 300 then
-        -- Try to decode JSON only if status is successful
-        -- Based on help textutils, possible JSON decode functions could be parseJSON or unserializeJSON
-        local json_decode_func = textutils.parseJSON or textutils.unserializeJSON -- Try parseJSON or unserializeJSON
-        if json_decode_func then
-            local success_decode, json_response = pcall(json_decode_func, raw_response_body)
-             if success_decode and type(json_response) == "table" then
-                  print("DEBUG CC: Decoded JSON response successfully.")
-                  return json_response, status_code -- Return decoded JSON table
-             else
-                  printError("CC Error: Received 2xx status but failed to decode response body as JSON.")
-                  printError("CC Error: Raw response body was: " .. tostring(raw_response_body))
-                  return nil, status_code -- Indicate failure to decode JSON
-             end
-        else
-             printError("CC Error: No suitable JSON decode function found (looked for parseJSON, unserializeJSON).")
-             printError("CC Error: Raw response body was: " .. tostring(raw_response_body))
-             return nil, status_code
-        end
-
-
-    else
-        -- Error status code returned by server
-        printError("CC Error: Server returned error status: " .. tostring(status_code) .. " " .. tostring(status_text or ""))
-        printError("CC Error: Error details (raw body): " .. tostring(raw_response_body))
-        return nil, status_code
     end
 end
 
