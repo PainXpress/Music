@@ -17,7 +17,8 @@ local function sendRequest(method, endpoint, data)
 
     local json_data = nil
     if method == "POST" and data then
-        json_data = textutils.encodeJSON(data)
+        -- Use the correct function: textutils.serializeJSON
+        json_data = textutils.serializeJSON(data, false) -- Use serializeJSON instead of encodeJSON
         headers["Content-Length"] = string.len(json_data) -- Manually setting Content-Length
         print("DEBUG CC: Request Body:", json_data) -- Debug print body
     end
@@ -74,15 +75,26 @@ local function sendRequest(method, endpoint, data)
     -- Check for successful HTTP status codes (2xx) before processing body
     if status_code and status_code >= 200 and status_code < 300 then
         -- Try to decode JSON only if status is successful
-        local json_response = textutils.decodeJSON(raw_response_body)
-        if json_response then
-            print("DEBUG CC: Decoded JSON response successfully.")
-            return json_response, status_code -- Return decoded JSON table
+        -- Assuming textutils.unserialize is for Lua tables, not JSON.
+        -- We need a JSON decode function. Let's check help again.
+        -- help output shows textutils.unserialize, serializeJSON, unserializeJSON
+        local json_decode_func = textutils.parseJSON or textutils.unserializeJSON -- Try parseJSON or unserializeJSON
+        if json_decode_func then
+            local success_decode, json_response = pcall(json_decode_func, raw_response_body)
+             if success_decode and type(json_response) == "table" then
+                  print("DEBUG CC: Decoded JSON response successfully.")
+                  return json_response, status_code -- Return decoded JSON table
+             else
+                  printError("CC Error: Received 2xx status but failed to decode response body as JSON.")
+                  printError("CC Error: Raw response body was: " .. tostring(raw_response_body))
+                  return nil, status_code -- Indicate failure to decode JSON
+             end
         else
-             printError("CC Error: Received 2xx status but failed to decode response body as JSON.")
+             printError("CC Error: No suitable JSON decode function found (looked for parseJSON, unserializeJSON).")
              printError("CC Error: Raw response body was: " .. tostring(raw_response_body))
-             return nil, status_code -- Indicate failure to decode JSON
+             return nil, status_code
         end
+
 
     else
         -- Error status code returned by server
