@@ -1,42 +1,8 @@
--- Function to read config from file
-local function readConfig(config_path)
-    local config = {}
-    local file = fs.open(config_path, "r")
-    if file then
-        local content = file.readAll()
-        file.close()
-
-        -- Simple parsing for key = value lines
-        for line in content:gmatch("([^\n]+)") do
-            local key, value = line:match("^%s*(%w+)%s*=%s*(.+)$")
-            if key then
-                -- Attempt to convert value to number if it looks like one
-                local num_value = tonumber(value)
-                if num_value ~= nil then
-                    config[key] = num_value
-                else
-                    -- Trim whitespace and remove quotes if present
-                    value = value:match("^%s*\"?(.-)\"?%s*$") or value:match("^%s*\'?(.-)\'?%s*$") or value:match("^%s*(.-)%s*$")
-                    config[key] = value
-                end
-            end
-        end
-    end
-    return config
-end
-
--- Read configuration
-local config = readConfig("config.txt") -- Reads config from config.txt in the same directory
-
--- Configuration (use values from config file, with defaults)
-local server_hostname = config.server_hostname or "YOUR_EC2_SERVER_HOSTNAME_DEFAULT" -- Default if not in config
-local server_port = config.server_port or 5000 -- Default to 5000 if not in config
+-- --- Configuration ---
+local server_hostname = "ec2-3-147-78-188.us-east-2.compute.amazonaws.com" -- ** HARDCODE YOUR EC2 PUBLIC DNS HERE **
+local server_port = 5000 -- ** HARDCODE YOUR SERVER PORT HERE (usually 5000) **
 local tape_label = "youtube_tape" -- The label for the tape
-
-if server_hostname == "YOUR_EC2_SERVER_HOSTNAME_DEFAULT" then
-    printError("Error: server_hostname not set in config.txt. Please edit config.txt.")
-    return -- Exit if critical config is missing
-end
+-- --- End Configuration ---
 
 
 -- Function to send a request to the server with added debug
