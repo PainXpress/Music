@@ -17,7 +17,7 @@ local function sendRequest(method, endpoint, data)
 
     local json_data = nil
     if method == "POST" and data then
-        -- Use the correct function: textutils.serializeJSON
+        -- Use the correct function based on help textutils: textutils.serializeJSON
         json_data = textutils.serializeJSON(data, false) -- Use serializeJSON instead of encodeJSON
         headers["Content-Length"] = string.len(json_data) -- Manually setting Content-Length
         print("DEBUG CC: Request Body:", json_data) -- Debug print body
@@ -75,9 +75,7 @@ local function sendRequest(method, endpoint, data)
     -- Check for successful HTTP status codes (2xx) before processing body
     if status_code and status_code >= 200 and status_code < 300 then
         -- Try to decode JSON only if status is successful
-        -- Assuming textutils.unserialize is for Lua tables, not JSON.
-        -- We need a JSON decode function. Let's check help again.
-        -- help output shows textutils.unserialize, serializeJSON, unserializeJSON
+        -- Based on help textutils, possible JSON decode functions could be parseJSON or unserializeJSON
         local json_decode_func = textutils.parseJSON or textutils.unserializeJSON -- Try parseJSON or unserializeJSON
         if json_decode_func then
             local success_decode, json_response = pcall(json_decode_func, raw_response_body)
