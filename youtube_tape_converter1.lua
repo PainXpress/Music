@@ -29,9 +29,6 @@ local function sendRequest(method, endpoint, data)
     local status_text = nil
     local http_error = nil
 
-    -- MODIFIED PCALL STRUCTURE
-    local success, result1, result2, result3, result4
-
     local function doHttpRequest()
         if method == "POST" then
             return http.post(url, json_data, headers)
@@ -40,16 +37,25 @@ local function sendRequest(method, endpoint, data)
         end
     end
 
-    success, result1, result2, result3, result4 = pcall(doHttpRequest) -- THIS WILL BE AROUND LINE 51
+    -- MODIFIED PCALL ASSIGNMENT
+    local success = pcall(doHttpRequest)
+    if success then
+        -- If pcall was successful, call doHttpRequest again to get its actual return values
+        raw_response_body, response_headers, status_code, status_text = doHttpRequest()
+    else
+        -- If pcall failed, result1 is the error message
+        http_error = raw_response_body -- pcall's second return value is the error message on failure
+        printError("CC Error: HTTP request pcall failed: " .. tostring(http_error), file=io.stderr)
+        -- Set other returns to nil explicitly for clarity
+        raw_response_body = nil
+        response_headers = nil
+        status_code = nil
+        status_text = nil
+        return nil, nil -- Return nil for both body and status on pcall failure
+    end
+
 
     if success then
-        -- If pcall was successful, the results are the return values from http.post/get
-        -- Assuming typical multiple return values: body, headers, statusCode, statusText
-        raw_response_body = result1
-        response_headers = result2
-        status_code = result3
-        status_text = result4
-
         -- --- Debug prints using the directly captured values ---
         print("DEBUG CC: HTTP request call was successful in pcall.", file=io.stderr)
         print("DEBUG CC: Retrieved Status Code:", tostring(status_code or "N/A"))
@@ -104,15 +110,10 @@ local function sendRequest(method, endpoint, data)
         end
 
     else
-        -- pcall failed, likely a connection error or low-level issue (timeout, connection refused etc.)
-        http_error = result1 -- result1 is the error message when pcall fails
-        printError("CC Error: HTTP request pcall failed: " .. tostring(http_error), file=io.stderr)
-        -- Assuming subsequent results are nil on pcall failure, but being explicit:
-        raw_response_body = nil
-        response_headers = nil
-        status_code = nil
-        status_text = nil
-        return nil, nil -- Return nil for both body and status on pcall failure
+        -- If pcall failed, the error message is already captured and printed above.
+        -- This 'else' block here is redundant given the structure change, but kept for clarity.
+        -- We've already returned nil, nil earlier in the 'else' of 'local success = pcall(doHttpRequest)'
+        return nil, nil
     end
 end
 local function printError(message)
