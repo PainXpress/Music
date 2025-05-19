@@ -38,7 +38,7 @@ local function sendRequest(method, endpoint, data)
     end
 
     -- MODIFIED PCALL ASSIGNMENT
-    local success = pcall(doHttpRequest)
+    local success = pcall(doHttpRequest) -- THIS LINE IS NOW AROUND 48
     if success then
         -- If pcall was successful, call doHttpRequest again to get its actual return values
         raw_response_body, response_headers, status_code, status_text = doHttpRequest()
