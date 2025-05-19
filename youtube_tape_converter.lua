@@ -29,15 +29,18 @@ local function sendRequest(method, endpoint, data)
     local status_text = nil
     local http_error = nil
 
-    local success, result1, result2, result3, result4 = pcall(function()
+    -- MODIFIED PCALL STRUCTURE
+    local success, result1, result2, result3, result4
+
+    local function doHttpRequest()
         if method == "POST" then
-            -- Expecting multiple return values directly from http.post
             return http.post(url, json_data, headers)
         else -- Assuming GET
-            -- Expecting multiple return values directly from http.get
             return http.get(url, headers)
         end
-    end)
+    end
+
+    success, result1, result2, result3, result4 = pcall(doHttpRequest) -- THIS WILL BE AROUND LINE 51
 
     if success then
         -- If pcall was successful, the results are the return values from http.post/get
@@ -434,7 +437,7 @@ elseif command == "download" then
                       printError("Received 2xx status but no data was received for download.")
                  end
             else
-                 printError("CC Error: Server returned error status: " .. tostring(status_code) .. " " .. tostring(status_text or ""))
+                 printError("CC Error: Server returned error error status: " .. tostring(status_code) .. " " .. tostring(status_text or ""))
                  printError("CC Error: Error details (raw body): " .. tostring(dfpwm_data))
             end
         else
